@@ -75,6 +75,8 @@ def play_audio_clip(
     audio_path: Path,
     start: float,
     duration: float = 4.0,
+    pad_before: float = 0.0,
+    pad_after: float = 0.0,
     player: str | None = None,
 ) -> bool:
     """Play a short audio snippet via ffplay (or specified player).
@@ -84,15 +86,18 @@ def play_audio_clip(
     if not audio_path.is_file():
         return False
 
+    actual_start = max(0.0, start - pad_before)
+    actual_duration = max(0.1, (start + duration + pad_after) - actual_start)
+
     player_cmd = player or "ffplay"
     cmd = [
         player_cmd,
         "-nodisp",
         "-autoexit",
         "-ss",
-        f"{max(0.0, start):.2f}",
+        f"{actual_start:.2f}",
         "-t",
-        f"{max(0.1, duration):.2f}",
+        f"{actual_duration:.2f}",
         str(audio_path),
     ]
     try:
@@ -101,7 +106,7 @@ def play_audio_clip(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
-            timeout=duration + 5.0,
+            timeout=actual_duration + 5.0,
         )
         return True
     except (subprocess.SubprocessError, FileNotFoundError, OSError):

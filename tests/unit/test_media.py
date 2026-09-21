@@ -142,3 +142,17 @@ def test_play_audio_clip_failure(mock_run: MagicMock, tmp_path: Path) -> None:
 
     result = play_audio_clip(audio_file, start=0.0, duration=2.0)
     assert result is False
+
+
+@patch("subprocess.run")
+def test_play_audio_clip_with_padding(mock_run: MagicMock, tmp_path: Path) -> None:
+    audio_file = tmp_path / "test.wav"
+    audio_file.write_bytes(b"dummy wav data")
+
+    result = play_audio_clip(
+        audio_file, start=10.0, duration=3.0, pad_before=2.0, pad_after=2.0
+    )
+    assert result is True
+    cmd = mock_run.call_args[0][0]
+    assert "-ss" in cmd and "8.00" in cmd
+    assert "-t" in cmd and "7.00" in cmd

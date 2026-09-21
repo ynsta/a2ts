@@ -86,6 +86,7 @@ def run_interactive_review(
     existing_mapping: SpeakersMapping | None = None,
     audio_path: Path | None = None,
     auto_play: bool = True,
+    audio_padding: float = 2.0,
 ) -> SpeakersMapping:
     """Run interactive terminal QCM to attribute speakers."""
     candidates = list(dict.fromkeys(candidates))
@@ -125,42 +126,79 @@ def run_interactive_review(
         )
         if audio_path:
             console.print("  [p] Replay sample 1 audio (or type p1, p2, p3)")
+            console.print(
+                "  [w] Play wider audio with extra context (or type w1, w2, w3)"
+            )
         console.print(f"  [s] {skip_label}")
         console.print("  [t] Review this cluster by time slices (temporal split)")
         console.print("  [c] Type custom name (or type speaker name directly)")
 
         if auto_play and audio_path and sample_turns:
             first_turn = sample_turns[0]
-            clip_dur = min(4.0, max(1.5, first_turn.end - first_turn.start))
-            console.print(f"[dim]🔊 Playing sample 1 audio ({clip_dur:.1f}s)...[/dim]")
-            play_audio_clip(audio_path, start=first_turn.start, duration=clip_dur)
+            clip_dur = max(1.5, first_turn.end - first_turn.start)
+            console.print(
+                f"[dim]🔊 Playing sample 1 audio (±{audio_padding:.1f}s context)...[/dim]"
+            )
+            play_audio_clip(
+                audio_path,
+                start=first_turn.start,
+                duration=clip_dur,
+                pad_before=audio_padding,
+                pad_after=audio_padding,
+            )
 
         while True:
             raw_choice = Prompt.ask(
-                "Attribution choice (number, custom name, [p]lay, [s]kip, or [t]ime-slice)",
+                "Attribution choice (number, custom name, [p]lay, [w]ide, [s]kip, or [t]ime-slice)",
                 default="s",
             ).strip()
 
             choice_lower = raw_choice.lower()
-            if choice_lower in ("p", "play", "p1", "p2", "p3", "p4"):
+            is_wide = choice_lower in (
+                "w",
+                "wide",
+                "w1",
+                "w2",
+                "w3",
+                "w4",
+                "p+",
+                "p1+",
+                "p2+",
+                "p3+",
+                "p4+",
+            )
+            is_play = choice_lower in ("p", "play", "p1", "p2", "p3", "p4") or is_wide
+
+            if is_play:
                 if not audio_path:
                     console.print(
                         "[yellow]Audio playback unavailable (no audio file).[/yellow]"
                     )
                     continue
                 p_idx = 0
-                if choice_lower in ("p1", "p2", "p3", "p4"):
-                    p_idx = int(choice_lower[1:]) - 1
+                for prefix in ("w", "p+", "p"):
+                    if choice_lower.startswith(prefix) and len(choice_lower) > len(
+                        prefix
+                    ):
+                        tail = choice_lower[len(prefix) :].rstrip("+")
+                        if tail.isdigit():
+                            p_idx = int(tail) - 1
+                            break
+
+                current_pad = audio_padding + 3.0 if is_wide else audio_padding
+                pad_lbl = f"±{current_pad:.1f}s"
                 if 0 <= p_idx < len(sample_turns):
                     target_turn = sample_turns[p_idx]
-                    clip_dur = min(4.0, max(1.5, target_turn.end - target_turn.start))
+                    clip_dur = max(1.5, target_turn.end - target_turn.start)
                     console.print(
-                        f"[dim]🔊 Playing sample {p_idx + 1} audio ({clip_dur:.1f}s)...[/dim]"
+                        f"[dim]🔊 Playing sample {p_idx + 1} audio ({pad_lbl} context)...[/dim]"
                     )
                     play_audio_clip(
                         audio_path,
                         start=target_turn.start,
                         duration=clip_dur,
+                        pad_before=current_pad,
+                        pad_after=current_pad,
                     )
                 else:
                     console.print(
@@ -221,47 +259,76 @@ def run_interactive_review(
                         console.print(
                             "  [p] Replay slice sample 1 audio (or type p1, p2, p3)"
                         )
+                        console.print(
+                            "  [w] Play wider slice audio context (or type w1, w2, w3)"
+                        )
 
                     if auto_play and audio_path and slice_samples:
                         first_s_turn = slice_samples[0]
-                        clip_dur = min(
-                            4.0, max(1.5, first_s_turn.end - first_s_turn.start)
-                        )
+                        clip_dur = max(1.5, first_s_turn.end - first_s_turn.start)
                         console.print(
-                            f"[dim]🔊 Playing Slice {slice_id} sample 1 audio ({clip_dur:.1f}s)...[/dim]"
+                            f"[dim]🔊 Playing Slice {slice_id} sample 1 audio (±{audio_padding:.1f}s context)...[/dim]"
                         )
                         play_audio_clip(
                             audio_path,
                             start=first_s_turn.start,
                             duration=clip_dur,
+                            pad_before=audio_padding,
+                            pad_after=audio_padding,
                         )
 
                     while True:
                         slice_choice = Prompt.ask(
-                            f"Attribution for Slice {slice_id} (number, custom name, [p]lay, or [s]kip)",
+                            f"Attribution for Slice {slice_id} (number, custom name, [p]lay, [w]ide, or [s]kip)",
                             default="s",
                         ).strip()
 
                         s_lower = slice_choice.lower()
-                        if s_lower in ("p", "play", "p1", "p2", "p3"):
+                        s_is_wide = s_lower in (
+                            "w",
+                            "wide",
+                            "w1",
+                            "w2",
+                            "w3",
+                            "p+",
+                            "p1+",
+                            "p2+",
+                            "p3+",
+                        )
+                        s_is_play = (
+                            s_lower in ("p", "play", "p1", "p2", "p3") or s_is_wide
+                        )
+
+                        if s_is_play:
                             if not audio_path:
                                 console.print(
                                     "[yellow]Audio playback unavailable.[/yellow]"
                                 )
                                 continue
                             p_idx = 0
-                            if s_lower in ("p1", "p2", "p3"):
-                                p_idx = int(s_lower[1:]) - 1
+                            for prefix in ("w", "p+", "p"):
+                                if s_lower.startswith(prefix) and len(s_lower) > len(
+                                    prefix
+                                ):
+                                    tail = s_lower[len(prefix) :].rstrip("+")
+                                    if tail.isdigit():
+                                        p_idx = int(tail) - 1
+                                        break
+
+                            s_pad = audio_padding + 3.0 if s_is_wide else audio_padding
+                            pad_lbl = f"±{s_pad:.1f}s"
                             if 0 <= p_idx < len(slice_samples):
                                 t_play = slice_samples[p_idx]
-                                clip_dur = min(4.0, max(1.5, t_play.end - t_play.start))
+                                clip_dur = max(1.5, t_play.end - t_play.start)
                                 console.print(
-                                    f"[dim]🔊 Playing Slice {slice_id} sample {p_idx + 1} audio ({clip_dur:.1f}s)...[/dim]"
+                                    f"[dim]🔊 Playing Slice {slice_id} sample {p_idx + 1} audio ({pad_lbl} context)...[/dim]"
                                 )
                                 play_audio_clip(
                                     audio_path,
                                     start=t_play.start,
                                     duration=clip_dur,
+                                    pad_before=s_pad,
+                                    pad_after=s_pad,
                                 )
                             else:
                                 console.print(

@@ -129,6 +129,10 @@ def run(
     auto_play: Annotated[
         bool, typer.Option(help="Auto-play audio sample during speaker review")
     ] = True,
+    audio_padding: Annotated[
+        float,
+        typer.Option(help="Context audio padding in seconds before/after sample quote"),
+    ] = 2.0,
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
@@ -243,6 +247,7 @@ def run(
             existing_mapping=mapping,
             audio_path=audio_path,
             auto_play=auto_play,
+            audio_padding=audio_padding,
         )
         save_speakers_mapping(mapping, mapping_path)
 
@@ -324,6 +329,10 @@ def review(
     auto_play: Annotated[
         bool, typer.Option(help="Auto-play audio sample during speaker review")
     ] = True,
+    audio_padding: Annotated[
+        float,
+        typer.Option(help="Context audio padding in seconds before/after sample quote"),
+    ] = 2.0,
 ) -> None:
     """Re-run interactive speaker review on cached session turns."""
     turns_path = session_dir / "turns.json"
@@ -370,6 +379,7 @@ def review(
         existing_mapping=mapping,
         audio_path=audio_path,
         auto_play=auto_play,
+        audio_padding=audio_padding,
     )
     save_speakers_mapping(mapping, mapping_path)
 

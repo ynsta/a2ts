@@ -226,10 +226,12 @@ def test_run_interactive_review_autoplay_audio(
     # User selects "1" (Brakk)
     with patch("a2ts.speaker_review.Prompt.ask", return_value="1"):
         mapping = run_interactive_review(
-            turns, candidates, audio_path=audio_file, auto_play=True
+            turns, candidates, audio_path=audio_file, auto_play=True, audio_padding=2.0
         )
         assert mapping.cluster_defaults == {"SPEAKER_00": "Brakk"}
-        mock_play.assert_called_once_with(audio_file, start=2.0, duration=4.0)
+        mock_play.assert_called_once_with(
+            audio_file, start=2.0, duration=4.0, pad_before=2.0, pad_after=2.0
+        )
 
 
 @patch("a2ts.speaker_review.play_audio_clip")
@@ -261,15 +263,47 @@ def test_run_interactive_review_manual_play_and_replay(
     prompt_inputs = ["p2", "p", "1"]
     with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
         mapping = run_interactive_review(
-            turns, candidates, audio_path=audio_file, auto_play=False
+            turns, candidates, audio_path=audio_file, auto_play=False, audio_padding=2.0
         )
         assert mapping.cluster_defaults == {"SPEAKER_00": "Merrow"}
         assert mock_ask.call_count == 3
         assert mock_play.call_count == 2
         # First call was for sample 2 (start=5.0, duration=3.0)
         assert mock_play.call_args_list[0][1]["start"] == 5.0
+        assert mock_play.call_args_list[0][1]["pad_before"] == 2.0
         # Second call was for sample 1 (start=1.0, duration=2.0)
         assert mock_play.call_args_list[1][1]["start"] == 1.0
+        assert mock_play.call_args_list[1][1]["pad_before"] == 2.0
+
+
+@patch("a2ts.speaker_review.play_audio_clip")
+def test_run_interactive_review_wide_playback(
+    mock_play: MagicMock, tmp_path: Path
+) -> None:
+    audio_file = tmp_path / "audio.wav"
+    audio_file.touch()
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=10.0,
+            end=12.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Sentence.",
+        ),
+    ]
+    candidates = ["Brakk"]
+    # User types "w" to hear wider context, then "1"
+    prompt_inputs = ["w", "1"]
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(
+            turns, candidates, audio_path=audio_file, auto_play=False, audio_padding=2.0
+        )
+        assert mapping.cluster_defaults == {"SPEAKER_00": "Brakk"}
+        assert mock_ask.call_count == 2
+        mock_play.assert_called_once_with(
+            audio_file, start=10.0, duration=2.0, pad_before=5.0, pad_after=5.0
+        )
 
 
 @patch("a2ts.speaker_review.play_audio_clip")
@@ -294,8 +328,10 @@ def test_run_interactive_review_time_slice_audio(
     prompt_inputs = ["t", "p", "1"]
     with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
         mapping = run_interactive_review(
-            turns, candidates, audio_path=audio_file, auto_play=False
+            turns, candidates, audio_path=audio_file, auto_play=False, audio_padding=2.0
         )
         assert mapping.slice_overrides == {"0": {"SPEAKER_00": "Ilvaris"}}
         assert mock_ask.call_count == 3
-        mock_play.assert_called_once_with(audio_file, start=10.0, duration=3.0)
+        mock_play.assert_called_once_with(
+            audio_file, start=10.0, duration=3.0, pad_before=2.0, pad_after=2.0
+        )

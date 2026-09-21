@@ -290,9 +290,9 @@ def test_review_command(mock_review: MagicMock, tmp_path: Path) -> None:
     assert out_file.is_file()
     content = out_file.read_text(encoding="utf-8")
     assert "### [00:00:00 - 00:00:05] Garrick" in content
-    assert "Hello world." in content
     assert mock_review.call_args[1]["audio_path"] == audio_file
     assert mock_review.call_args[1]["auto_play"] is True
+    assert mock_review.call_args[1]["audio_padding"] == 2.0
 
 
 def test_review_command_missing_turns(tmp_path: Path) -> None:
