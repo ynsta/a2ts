@@ -72,3 +72,36 @@ def test_extract_audio_to_wav_cached(mock_run: MagicMock, tmp_path: Path) -> Non
     wav_path = extract_audio_to_wav(input_file, out_dir)
     assert wav_path == cached_wav
     mock_run.assert_not_called()
+
+
+@patch("subprocess.run")
+def test_probe_media_subprocess_error(mock_run: MagicMock, tmp_path: Path) -> None:
+    test_file = tmp_path / "corrupt.mkv"
+    test_file.touch()
+
+    mock_run.side_effect = subprocess.CalledProcessError(
+        returncode=1, cmd=["ffprobe"], stderr="Invalid data found when processing input"
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        probe_media(test_file)
+    assert "ffmpeg/ffprobe error: Invalid data found when processing input" in str(
+        exc_info.value
+    )
+
+
+@patch("subprocess.run")
+def test_extract_audio_to_wav_subprocess_error(
+    mock_run: MagicMock, tmp_path: Path
+) -> None:
+    input_file = tmp_path / "corrupt.mp4"
+    input_file.write_bytes(b"bad content")
+    out_dir = tmp_path / "cache"
+
+    mock_run.side_effect = subprocess.CalledProcessError(
+        returncode=1, cmd=["ffmpeg"], stderr="Error while decoding stream"
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        extract_audio_to_wav(input_file, out_dir)
+    assert "ffmpeg/ffprobe error: Error while decoding stream" in str(exc_info.value)

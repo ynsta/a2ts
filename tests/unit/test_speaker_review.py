@@ -145,3 +145,41 @@ def test_run_interactive_review_options() -> None:
             "SPEAKER_01": "Charlie",
         }
         assert mock_ask.call_count == 4
+
+
+def test_run_interactive_review_with_existing_mapping() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=6.0,
+            end=10.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="World",
+        ),
+    ]
+    # Deduplication test: duplicate "Alice" in candidates
+    candidates = ["Alice", "Alice", "Bob"]
+    existing = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice", "SPEAKER_01": "OldBob"}
+    )
+
+    # SPEAKER_00 selects 's' (keep existing "Alice")
+    # SPEAKER_01 selects '2' (change to "Bob")
+    prompt_inputs = ["s", "2"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(turns, candidates, existing_mapping=existing)
+        assert mapping.cluster_defaults == {
+            "SPEAKER_00": "Alice",
+            "SPEAKER_01": "Bob",
+        }
+        assert mock_ask.call_count == 2

@@ -50,10 +50,15 @@ def refine_transcript_markdown(
         f"Voici la transcription brute:\n\n{normalized}"
     )
 
-    cmd = ["agy", "--model", agy_model, "--effort", "low", prompt]
+    cmd = ["agy", "--model", agy_model, "--effort", "low"]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, check=True, timeout=120
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
         )
         output = proc.stdout.strip()
         diff = compute_edit_distance_ratio(normalized, output)

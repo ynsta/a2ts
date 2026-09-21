@@ -54,12 +54,10 @@ def test_refine_transcript_markdown_success() -> None:
         assert result == refined_output
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "agy"
-        assert cmd[1] == "--model"
-        assert cmd[2] == "custom-model"
-        assert cmd[3] == "--effort"
-        assert cmd[4] == "low"
-        assert "Lance 1d20 pour voir." in cmd[5]
+        assert cmd == ["agy", "--model", "custom-model", "--effort", "low"]
+        assert "Lance 1d20 pour voir." in mock_run.call_args.kwargs["input"]
+        assert mock_run.call_args.kwargs["text"] is True
+        assert mock_run.call_args.kwargs["capture_output"] is True
 
 
 def test_refine_transcript_markdown_hallucination_guard() -> None:

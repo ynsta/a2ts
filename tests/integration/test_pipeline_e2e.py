@@ -59,6 +59,8 @@ def test_cli_run_pipeline_end_to_end(
             str(context_dir),
             "--output",
             str(out_file),
+            "--cache-dir",
+            str(tmp_path / ".a2ts"),
             "--no-interactive",
             "--no-refine",
         ],

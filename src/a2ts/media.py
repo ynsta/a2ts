@@ -32,7 +32,11 @@ def probe_media(media_path: Path) -> dict[str, Any]:
         "json",
         str(media_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        stderr_msg = e.stderr.strip() if e.stderr else ""
+        raise RuntimeError(f"ffmpeg/ffprobe error: {stderr_msg}") from e
     return cast(dict[str, Any], json.loads(proc.stdout))
 
 
@@ -59,5 +63,9 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
         "1",
         str(wav_path),
     ]
-    subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        stderr_msg = e.stderr.strip() if e.stderr else ""
+        raise RuntimeError(f"ffmpeg/ffprobe error: {stderr_msg}") from e
     return wav_path

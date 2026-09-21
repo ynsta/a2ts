@@ -68,7 +68,8 @@ def extract_candidates_from_markdown(content: str, filename: str) -> list[Entity
     for match in WIKILINK_PATTERN.finditer(content):
         target = match.group(1).strip()
         alias = match.group(2).strip() if match.group(2) else None
-        name = alias if alias else target
+        clean_target = target.split("#", 1)[0].strip()
+        name = alias if alias else clean_target
 
         if any(name.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
             continue
@@ -151,3 +152,6 @@ def build_biasing_prompt(entities: list[EntityRecord], max_tokens: int = 220) ->
             break
 
     return ", ".join(selected)
+
+
+parse_obsidian_note = extract_candidates_from_markdown

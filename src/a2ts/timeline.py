@@ -15,14 +15,14 @@ def assign_time_slices(
     return updated
 
 
-def split_cluster_at_time(
-    turns: list[SpeakerTurn],
+def split_cluster_at_time[TurnT: (SpeakerTurn, AlignedTurn)](
+    turns: list[TurnT],
     cluster_id: str,
     split_time: float,
     new_cluster_id: str,
-) -> list[SpeakerTurn]:
+) -> list[TurnT]:
     """Reassign all turns of cluster_id occurring at or after split_time to new_cluster_id."""
-    updated: list[SpeakerTurn] = []
+    updated: list[TurnT] = []
     for turn in turns:
         if turn.cluster_id == cluster_id and turn.start >= split_time:
             updated.append(turn.model_copy(update={"cluster_id": new_cluster_id}))

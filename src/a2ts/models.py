@@ -75,3 +75,4 @@ class SessionMetadata(BaseModel):
     prompt_hash: str
     time_slice_minutes: float
     created_at: str
+    output_path: str = ""

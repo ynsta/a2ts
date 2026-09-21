@@ -51,4 +51,5 @@ recordings/
 .superpowers/
 .transcripts/
 transcripts/
+scratch/
 *.raw.md

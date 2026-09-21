@@ -74,10 +74,17 @@ def load_speakers_mapping(path: Path) -> SpeakersMapping:
 
 
 def run_interactive_review(
-    turns: list[AlignedTurn], candidates: list[str]
+    turns: list[AlignedTurn],
+    candidates: list[str],
+    existing_mapping: SpeakersMapping | None = None,
 ) -> SpeakersMapping:
     """Run interactive terminal QCM to attribute speakers."""
-    mapping = SpeakersMapping()
+    candidates = list(dict.fromkeys(candidates))
+    mapping = (
+        existing_mapping.model_copy(deep=True)
+        if existing_mapping is not None
+        else SpeakersMapping()
+    )
     stats = collect_speaker_stats(turns)
 
     console.print(
@@ -92,12 +99,19 @@ def run_interactive_review(
             m, s = divmod(int(t_start), 60)
             console.print(f'  • [[bold]{m:02d}:{s:02d}[/bold]] "{sample}"')
 
+        current = mapping.cluster_defaults.get(cid)
+        if current:
+            console.print(f"Current mapping: [bold green]{current}[/bold green]")
+
         console.print("\nCandidate options:")
         opts = {str(i + 1): name for i, name in enumerate(candidates[:6])}
         for idx, name in opts.items():
             console.print(f"  [{idx}] {name}")
         console.print("  [c] Type custom name")
-        console.print("  [s] Skip (keep cluster ID)")
+        skip_label = (
+            f"Keep current ({current})" if current else "Skip (keep cluster ID)"
+        )
+        console.print(f"  [s] {skip_label}")
 
         choice = Prompt.ask(
             "Attribution choice", choices=list(opts.keys()) + ["c", "s"], default="s"
@@ -111,6 +125,7 @@ def run_interactive_review(
                 mapping.cluster_defaults[cid] = custom_name
                 console.print(f"[green]✓ Mapped {cid} -> {custom_name}[/green]\n")
         else:
-            console.print(f"[dim]Kept {cid}[/dim]\n")
+            kept = mapping.cluster_defaults.get(cid, cid)
+            console.print(f"[dim]Kept {kept}[/dim]\n")
 
     return mapping

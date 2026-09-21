@@ -1,14 +1,17 @@
 """CLI application and pipeline orchestration for a2ts."""
 
+import hashlib
+import json
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
 
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
-from a2ts.media import extract_audio_to_wav
-from a2ts.models import SpeakerTurn
+from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
+from a2ts.models import AlignedTurn, RawSegment, SessionMetadata, SpeakerTurn
 from a2ts.refiner import refine_transcript_markdown
 from a2ts.speaker_review import (
     apply_speakers_mapping,
@@ -19,6 +22,7 @@ from a2ts.speaker_review import (
 from a2ts.timeline import (
     align_words_to_speaker_turns,
     assign_time_slices,
+    split_cluster_at_time,
 )
 from a2ts.transcriber import get_engine
 from a2ts.vocab import (
@@ -80,6 +84,15 @@ def run(
     engine: Annotated[
         str, typer.Option(help="Transcription engine: voxtral or whisper")
     ] = "whisper",
+    model_name: Annotated[
+        str | None, typer.Option(help="Model name or path for engine")
+    ] = None,
+    device: Annotated[
+        str, typer.Option(help="Device to run inference on (cuda/cpu)")
+    ] = "cuda",
+    compute_type: Annotated[
+        str, typer.Option(help="Computation type (float16/int8/etc.)")
+    ] = "float16",
     context_dir: Annotated[
         Path, typer.Option(help="Directory containing Obsidian notes")
     ] = Path("contexte"),
@@ -110,6 +123,7 @@ def run(
 
     # 1. Extract audio
     console.print("[bold]Step 1: Extracting audio stream...[/bold]")
+    file_hash = compute_file_hash(media_file)
     audio_path = extract_audio_to_wav(media_file, cache_dir / "audio_cache")
 
     # 2. Mine lore & vocabulary
@@ -119,10 +133,36 @@ def run(
         entities.extend(load_wordlist_file(vocab_file))
     prompt = build_biasing_prompt(entities) if entities else None
 
-    # 3. Transcribe audio
-    console.print(f"[bold]Step 3: Transcribing with engine '{engine}'...[/bold]")
-    transcriber = get_engine(engine)
-    raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
+    # 3. Transcribe audio with caching
+    transcripts_dir = cache_dir / "transcripts"
+    transcripts_dir.mkdir(parents=True, exist_ok=True)
+    transcript_cache = transcripts_dir / f"{file_hash}_{engine}.json"
+
+    if transcript_cache.is_file():
+        console.print(
+            f"[bold cyan]Step 3: Loading cached raw transcription from {transcript_cache}...[/bold cyan]"
+        )
+        cached_data = json.loads(transcript_cache.read_text(encoding="utf-8"))
+        raw_segments = [RawSegment.model_validate(seg) for seg in cached_data]
+    else:
+        console.print(f"[bold]Step 3: Transcribing with engine '{engine}'...[/bold]")
+        engine_kwargs: dict[str, Any] = {}
+        if engine == "whisper":
+            engine_kwargs["device"] = device
+            engine_kwargs["compute_type"] = compute_type
+            if model_name:
+                engine_kwargs["model_name"] = model_name
+        elif engine == "voxtral":
+            if model_name:
+                engine_kwargs["model_name"] = model_name
+        transcriber = get_engine(engine, **engine_kwargs)
+        raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
+        transcript_cache.write_text(
+            json.dumps(
+                [s.model_dump() for s in raw_segments], indent=2, ensure_ascii=False
+            ),
+            encoding="utf-8",
+        )
 
     # 4. Temporal slicing & alignment
     console.print("[bold]Step 4: Time-slice segmentation and alignment...[/bold]")
@@ -131,19 +171,30 @@ def run(
             id=i,
             start=seg.start,
             end=seg.end,
-            cluster_id=f"SPEAKER_{i % 2:02d}",
+            cluster_id="SPEAKER_00",
         )
         for i, seg in enumerate(raw_segments)
     ]
     sliced_turns = assign_time_slices(dummy_turns, slice_minutes=slice_minutes)
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
+    # Cache aligned turns for review and split subcommands
+    turns_path = cache_dir / "turns.json"
+    turns_path.write_text(
+        json.dumps(
+            [t.model_dump() for t in aligned_turns], indent=2, ensure_ascii=False
+        ),
+        encoding="utf-8",
+    )
+
     # 5. Interactive speaker review
     mapping_path = cache_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
     if interactive:
         candidate_names = [e.name for e in entities]
-        mapping = run_interactive_review(aligned_turns, candidate_names)
+        mapping = run_interactive_review(
+            aligned_turns, candidate_names, existing_mapping=mapping
+        )
         save_speakers_mapping(mapping, mapping_path)
 
     aligned_turns = apply_speakers_mapping(aligned_turns, mapping)
@@ -161,8 +212,141 @@ def run(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(final_md, encoding="utf-8")
+
+    # 8. Save session metadata
+    duration = 0.0
+    try:
+        probe_info = probe_media(media_file)
+        duration = float(probe_info.get("format", {}).get("duration", 0.0))
+    except (RuntimeError, FileNotFoundError, OSError, KeyError, ValueError):
+        if raw_segments:
+            duration = max(s.end for s in raw_segments)
+
+    resolved_model_name = model_name or (
+        "large-v3" if engine == "whisper" else "mistralai/Voxtral-Mini-3B-2507"
+    )
+    prompt_hash = (
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16] if prompt else ""
+    )
+    session_meta = SessionMetadata(
+        media_path=str(media_file),
+        media_hash=file_hash,
+        duration_seconds=duration,
+        engine=engine,
+        model_name=resolved_model_name,
+        prompt_hash=prompt_hash,
+        time_slice_minutes=slice_minutes,
+        created_at=datetime.now(UTC).isoformat(),
+        output_path=str(output),
+    )
+    (cache_dir / "session.json").write_text(
+        json.dumps(session_meta.model_dump(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
     console.print(
         f"\n[bold green]✓ Pipeline completed. Transcript saved to:[/bold green] {output}\n"
+    )
+
+
+@app.command()
+def review(
+    session_dir: Annotated[
+        Path, typer.Argument(help="Path to session cache directory (.a2ts)")
+    ] = Path(".a2ts"),
+    output: Annotated[Path, typer.Option(help="Output markdown path")] = Path(
+        "transcript.md"
+    ),
+) -> None:
+    """Re-run interactive speaker review on cached session turns."""
+    turns_path = session_dir / "turns.json"
+    if not turns_path.is_file():
+        console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
+        raise typer.Exit(code=1)
+
+    turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
+    turns = [AlignedTurn.model_validate(t) for t in turns_data]
+
+    session_path = session_dir / "session.json"
+    if session_path.is_file():
+        _ = SessionMetadata.model_validate_json(
+            session_path.read_text(encoding="utf-8")
+        )
+
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+
+    candidate_names: list[str] = []
+    contexte_dir = Path("contexte")
+    if contexte_dir.is_dir():
+        candidate_names.extend(e.name for e in scan_context_directory(contexte_dir))
+    candidate_names.extend(mapping.cluster_defaults.values())
+
+    mapping = run_interactive_review(turns, candidate_names, existing_mapping=mapping)
+    save_speakers_mapping(mapping, mapping_path)
+
+    aligned_turns = apply_speakers_mapping(turns, mapping)
+    debounced_turns = debounce_consecutive_turns(aligned_turns)
+    raw_md = render_markdown_transcript(debounced_turns)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(raw_md, encoding="utf-8")
+    console.print(
+        f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {output}\n"
+    )
+
+
+@app.command()
+def split(
+    session_dir: Annotated[
+        Path, typer.Argument(help="Path to session cache directory (.a2ts)")
+    ],
+    cluster_id: Annotated[
+        str, typer.Argument(help="Cluster ID to split, e.g. SPEAKER_00")
+    ],
+    at: Annotated[float, typer.Option(help="Split timestamp in seconds")],
+    to: Annotated[str, typer.Option(help="New cluster ID or speaker name")],
+    output: Annotated[Path | None, typer.Option(help="Output markdown path")] = None,
+) -> None:
+    """Split speaker cluster at timestamp and regenerate transcript."""
+    turns_path = session_dir / "turns.json"
+    if not turns_path.is_file():
+        console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
+        raise typer.Exit(code=1)
+
+    turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
+    turns = [AlignedTurn.model_validate(t) for t in turns_data]
+
+    updated_turns = split_cluster_at_time(turns, cluster_id, at, to)
+    turns_path.write_text(
+        json.dumps(
+            [t.model_dump() for t in updated_turns], indent=2, ensure_ascii=False
+        ),
+        encoding="utf-8",
+    )
+
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+    mapped_turns = apply_speakers_mapping(updated_turns, mapping)
+    debounced_turns = debounce_consecutive_turns(mapped_turns)
+    raw_md = render_markdown_transcript(debounced_turns)
+
+    out_path = output
+    if out_path is None:
+        session_path = session_dir / "session.json"
+        if session_path.is_file():
+            meta = SessionMetadata.model_validate_json(
+                session_path.read_text(encoding="utf-8")
+            )
+            if meta.output_path:
+                out_path = Path(meta.output_path)
+    if out_path is None:
+        out_path = Path("transcript.md")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(raw_md, encoding="utf-8")
+    console.print(
+        f"\n[bold green]✓ Cluster '{cluster_id}' split at {at}s to '{to}'. Transcript saved to:[/bold green] {out_path}\n"
     )
 
 

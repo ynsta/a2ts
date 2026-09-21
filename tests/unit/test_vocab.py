@@ -112,3 +112,17 @@ def test_build_biasing_prompt_dedup_and_whitespace() -> None:
     ]
     prompt = build_biasing_prompt(entities, max_tokens=220)
     assert prompt == "Garrick Hautbois, Phandaline"
+
+
+def test_extract_candidates_wikilink_section_anchor() -> None:
+    content = """
+[[Spell#Fireball]]
+[[Spell#Lightning|Foudre]]
+[[#OnlySection]]
+"""
+    entities = extract_candidates_from_markdown(content, "rules.md")
+    names = [e.name for e in entities]
+    assert "Spell" in names
+    assert "Foudre" in names
+    assert "OnlySection" not in names
+    assert "" not in names
