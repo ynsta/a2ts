@@ -2,6 +2,8 @@ from a2ts.models import (
     AlignedTurn,
     EntityRecord,
     RawSegment,
+    SessionMetadata,
+    SpeakersMapping,
     SpeakerTurn,
     WordTimestamp,
 )
@@ -59,6 +61,53 @@ def test_aligned_turn() -> None:
 
 
 def test_entity_record() -> None:
-    entity = EntityRecord(name="Kaelen", kind="wikilink", source_file="contexte/perso.md")
+    entity = EntityRecord(
+        name="Kaelen", kind="wikilink", source_file="contexte/perso.md"
+    )
     assert entity.name == "Kaelen"
     assert entity.kind == "wikilink"
+
+
+def test_speakers_mapping_defaults() -> None:
+    mapping1 = SpeakersMapping()
+    mapping2 = SpeakersMapping()
+
+    assert mapping1.cluster_defaults == {}
+    assert mapping1.slice_overrides == {}
+    assert mapping1.turn_overrides == {}
+
+    # Verify default factory produces independent instances
+    mapping1.cluster_defaults["SPEAKER_00"] = "MJ"
+    assert "SPEAKER_00" not in mapping2.cluster_defaults
+
+
+def test_speakers_mapping_with_values() -> None:
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "MJ"},
+        slice_overrides={"0": {"SPEAKER_01": "Alice"}},
+        turn_overrides={1: "Bob"},
+    )
+    assert mapping.cluster_defaults["SPEAKER_00"] == "MJ"
+    assert mapping.slice_overrides["0"]["SPEAKER_01"] == "Alice"
+    assert mapping.turn_overrides[1] == "Bob"
+
+
+def test_session_metadata() -> None:
+    meta = SessionMetadata(
+        media_path="/path/to/media.mp3",
+        media_hash="hash123",
+        duration_seconds=3600.0,
+        engine="voxtral",
+        model_name="mistral-7b-voxtral",
+        prompt_hash="prome987",
+        time_slice_minutes=15.0,
+        created_at="2026-09-21T11:00:00Z",
+    )
+    assert meta.media_path == "/path/to/media.mp3"
+    assert meta.media_hash == "hash123"
+    assert meta.duration_seconds == 3600.0
+    assert meta.engine == "voxtral"
+    assert meta.model_name == "mistral-7b-voxtral"
+    assert meta.prompt_hash == "prome987"
+    assert meta.time_slice_minutes == 15.0
+    assert meta.created_at == "2026-09-21T11:00:00Z"
