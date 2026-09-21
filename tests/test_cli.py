@@ -7,7 +7,13 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from a2ts.cli import app
-from a2ts.models import AlignedTurn, RawSegment, SpeakersMapping, WordTimestamp
+from a2ts.models import (
+    AlignedTurn,
+    RawSegment,
+    SpeakersMapping,
+    SpeakerTurn,
+    WordTimestamp,
+)
 
 runner = CliRunner()
 
@@ -123,6 +129,7 @@ def test_run_caching_and_provenance(
             str(cache_dir),
             "--no-interactive",
             "--no-refine",
+            "--no-diarize",
         ],
     )
     assert result.exit_code == 0
@@ -168,10 +175,59 @@ def test_run_caching_and_provenance(
             str(cache_dir),
             "--no-interactive",
             "--no-refine",
+            "--no-diarize",
         ],
     )
     assert result2.exit_code == 0
     dummy_engine.transcribe.assert_not_called()
+
+
+@patch("a2ts.cli.diarize_segments")
+@patch("a2ts.cli.get_engine")
+@patch("a2ts.cli.extract_audio_to_wav")
+def test_run_with_diarization(
+    mock_extract: MagicMock,
+    mock_get_engine: MagicMock,
+    mock_diarize: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Test run executes diarize_segments when --diarize is active."""
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"dummy")
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    mock_extract.return_value = tmp_path / "audio.wav"
+    dummy_engine = MagicMock()
+    dummy_engine.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=2.0, text="First"),
+        RawSegment(id=1, start=2.5, end=5.0, text="Second"),
+    ]
+    mock_get_engine.return_value = dummy_engine
+
+    mock_diarize.return_value = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.5, end=5.0, cluster_id="SPEAKER_01"),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(media_file),
+            "--num-speakers",
+            "2",
+            "--output",
+            str(out_file),
+            "--cache-dir",
+            str(cache_dir),
+            "--no-interactive",
+            "--no-refine",
+        ],
+    )
+    assert result.exit_code == 0
+    mock_diarize.assert_called_once()
+    assert out_file.is_file()
 
 
 @patch("a2ts.cli.run_interactive_review")

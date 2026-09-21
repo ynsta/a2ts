@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
+from a2ts.diarizer import diarize_segments
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
 from a2ts.models import AlignedTurn, RawSegment, SessionMetadata, SpeakerTurn
 from a2ts.refiner import refine_transcript_markdown
@@ -103,6 +104,13 @@ def run(
     slice_minutes: Annotated[
         float, typer.Option(help="Time slice window size in minutes")
     ] = 15.0,
+    diarize: Annotated[
+        bool, typer.Option(help="Enable acoustic speaker diarization")
+    ] = True,
+    num_speakers: Annotated[
+        int | None,
+        typer.Option(help="Exact number of speakers to detect (optional)"),
+    ] = None,
     speakers: Annotated[
         str | None,
         typer.Option(
@@ -177,18 +185,32 @@ def run(
             encoding="utf-8",
         )
 
-    # 4. Temporal slicing & alignment
-    console.print("[bold]Step 4: Time-slice segmentation and alignment...[/bold]")
-    dummy_turns = [
-        SpeakerTurn(
-            id=i,
-            start=seg.start,
-            end=seg.end,
-            cluster_id="SPEAKER_00",
+    # 4. Acoustic Diarization & Temporal slicing
+    console.print("[bold]Step 4: Acoustic speaker diarization & alignment...[/bold]")
+    diarization_dir = cache_dir / "diarization"
+    diarization_dir.mkdir(parents=True, exist_ok=True)
+    diar_cache = diarization_dir / f"{file_hash}.json"
+
+    if diarize:
+        speaker_turns = diarize_segments(
+            audio_path=audio_path,
+            segments=raw_segments,
+            num_speakers=num_speakers,
+            device=device,
+            cache_path=diar_cache,
         )
-        for i, seg in enumerate(raw_segments)
-    ]
-    sliced_turns = assign_time_slices(dummy_turns, slice_minutes=slice_minutes)
+    else:
+        speaker_turns = [
+            SpeakerTurn(
+                id=i,
+                start=seg.start,
+                end=seg.end,
+                cluster_id="SPEAKER_00",
+            )
+            for i, seg in enumerate(raw_segments)
+        ]
+
+    sliced_turns = assign_time_slices(speaker_turns, slice_minutes=slice_minutes)
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
     # Cache aligned turns for review and split subcommands

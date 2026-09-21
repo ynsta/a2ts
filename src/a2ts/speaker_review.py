@@ -111,14 +111,81 @@ def run_interactive_review(
             f"Keep current ({current})" if current else "Skip (keep cluster ID)"
         )
         console.print(f"  [s] {skip_label}")
+        console.print("  [t] Review this cluster by time slices (temporal split)")
         console.print("  [c] Type custom name (or type speaker name directly)")
 
         raw_choice = Prompt.ask(
-            "Attribution choice (number, custom name, or [s]kip)", default="s"
+            "Attribution choice (number, custom name, [s]kip, or [t]ime-slice)",
+            default="s",
         ).strip()
         if raw_choice == "s" or not raw_choice:
             kept = mapping.cluster_defaults.get(cid, cid)
             console.print(f"[dim]Kept {kept}[/dim]\n")
+        elif raw_choice == "t":
+            slices: dict[int, list[AlignedTurn]] = {}
+            for t in turns:
+                if t.cluster_id == cid:
+                    slices.setdefault(t.time_slice_id, []).append(t)
+
+            console.print(
+                f"\n[bold magenta]=== Reviewing {cid} by Time Slice ({len(slices)} slices) ===[/bold magenta]"
+            )
+            for slice_id in sorted(slices.keys()):
+                slice_turns = slices[slice_id]
+                t_start = slice_turns[0].start
+                t_end = slice_turns[-1].end
+                m1, s1 = divmod(int(t_start), 60)
+                m2, s2 = divmod(int(t_end), 60)
+                h1, m1 = divmod(m1, 60)
+                h2, m2 = divmod(m2, 60)
+                ts_label = f"{h1:02d}:{m1:02d}:{s1:02d} - {h2:02d}:{m2:02d}:{s2:02d}"
+
+                curr_override = mapping.slice_overrides.get(str(slice_id), {}).get(cid)
+                curr_str = curr_override or current or cid
+
+                console.print(
+                    f"\n[bold yellow]Slice {slice_id} [{ts_label}][/bold yellow] ({len(slice_turns)} turns)"
+                )
+                console.print("Sample quotes:")
+                for sample_turn in slice_turns[:3]:
+                    sm, ss = divmod(int(sample_turn.start), 60)
+                    sh, sm = divmod(sm, 60)
+                    console.print(
+                        f'  • [[bold]{sh:02d}:{sm:02d}:{ss:02d}[/bold]] "{sample_turn.text}"'
+                    )
+
+                console.print(f"Current mapping: [bold green]{curr_str}[/bold green]")
+                slice_choice = Prompt.ask(
+                    f"Attribution for Slice {slice_id} (number, custom name, or [s]kip)",
+                    default="s",
+                ).strip()
+
+                if slice_choice == "s" or not slice_choice:
+                    console.print(f"[dim]Kept {curr_str}[/dim]")
+                elif slice_choice in opts:
+                    mapping.slice_overrides.setdefault(str(slice_id), {})[cid] = opts[
+                        slice_choice
+                    ]
+                    console.print(
+                        f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {opts[slice_choice]}[/green]"
+                    )
+                elif slice_choice == "c":
+                    c_name = Prompt.ask("Enter custom speaker name").strip()
+                    if c_name:
+                        mapping.slice_overrides.setdefault(str(slice_id), {})[cid] = (
+                            c_name
+                        )
+                        console.print(
+                            f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {c_name}[/green]"
+                        )
+                else:
+                    mapping.slice_overrides.setdefault(str(slice_id), {})[cid] = (
+                        slice_choice
+                    )
+                    console.print(
+                        f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {slice_choice}[/green]"
+                    )
+            console.print("")
         elif raw_choice in opts:
             mapping.cluster_defaults[cid] = opts[raw_choice]
             console.print(f"[green]✓ Mapped {cid} -> {opts[raw_choice]}[/green]\n")

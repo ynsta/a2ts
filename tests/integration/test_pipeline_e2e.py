@@ -63,6 +63,7 @@ def test_cli_run_pipeline_end_to_end(
             str(tmp_path / ".a2ts"),
             "--no-interactive",
             "--no-refine",
+            "--no-diarize",
         ],
     )
     assert result.exit_code == 0
