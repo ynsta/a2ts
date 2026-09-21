@@ -155,3 +155,34 @@ def build_biasing_prompt(entities: list[EntityRecord], max_tokens: int = 220) ->
 
 
 parse_obsidian_note = extract_candidates_from_markdown
+
+
+def load_speaker_names(
+    speakers_file: Path | None = None,
+    speakers_arg: str | None = None,
+    context_dir: Path | None = None,
+) -> list[str]:
+    """Load known speaker/character names from CLI args, files, or context directory."""
+    names: list[str] = []
+    if speakers_arg:
+        for s in speakers_arg.split(","):
+            clean = s.strip()
+            if clean:
+                names.append(clean)
+
+    if speakers_file and speakers_file.is_file():
+        for line in speakers_file.read_text(encoding="utf-8").splitlines():
+            clean = line.strip().lstrip("-*•0123456789. ")
+            if clean and not clean.startswith("#"):
+                names.append(clean)
+
+    if context_dir and context_dir.is_dir():
+        for candidate_filename in ["speakers.txt", "speakers.md", "personnages.txt"]:
+            cand_path = context_dir / candidate_filename
+            if cand_path.is_file():
+                for line in cand_path.read_text(encoding="utf-8").splitlines():
+                    clean = line.strip().lstrip("-*•0123456789. ")
+                    if clean and not clean.startswith("#"):
+                        names.append(clean)
+
+    return list(dict.fromkeys(names))

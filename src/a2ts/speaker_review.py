@@ -104,28 +104,31 @@ def run_interactive_review(
             console.print(f"Current mapping: [bold green]{current}[/bold green]")
 
         console.print("\nCandidate options:")
-        opts = {str(i + 1): name for i, name in enumerate(candidates[:6])}
+        opts = {str(i + 1): name for i, name in enumerate(candidates[:10])}
         for idx, name in opts.items():
             console.print(f"  [{idx}] {name}")
-        console.print("  [c] Type custom name")
         skip_label = (
             f"Keep current ({current})" if current else "Skip (keep cluster ID)"
         )
         console.print(f"  [s] {skip_label}")
+        console.print("  [c] Type custom name (or type speaker name directly)")
 
-        choice = Prompt.ask(
-            "Attribution choice", choices=list(opts.keys()) + ["c", "s"], default="s"
-        )
-        if choice in opts:
-            mapping.cluster_defaults[cid] = opts[choice]
-            console.print(f"[green]✓ Mapped {cid} -> {opts[choice]}[/green]\n")
-        elif choice == "c":
+        raw_choice = Prompt.ask(
+            "Attribution choice (number, custom name, or [s]kip)", default="s"
+        ).strip()
+        if raw_choice == "s" or not raw_choice:
+            kept = mapping.cluster_defaults.get(cid, cid)
+            console.print(f"[dim]Kept {kept}[/dim]\n")
+        elif raw_choice in opts:
+            mapping.cluster_defaults[cid] = opts[raw_choice]
+            console.print(f"[green]✓ Mapped {cid} -> {opts[raw_choice]}[/green]\n")
+        elif raw_choice == "c":
             custom_name = Prompt.ask("Enter custom speaker name").strip()
             if custom_name:
                 mapping.cluster_defaults[cid] = custom_name
                 console.print(f"[green]✓ Mapped {cid} -> {custom_name}[/green]\n")
         else:
-            kept = mapping.cluster_defaults.get(cid, cid)
-            console.print(f"[dim]Kept {kept}[/dim]\n")
+            mapping.cluster_defaults[cid] = raw_choice
+            console.print(f"[green]✓ Mapped {cid} -> {raw_choice}[/green]\n")
 
     return mapping

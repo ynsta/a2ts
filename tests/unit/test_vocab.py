@@ -6,6 +6,7 @@ from a2ts.models import EntityRecord
 from a2ts.vocab import (
     build_biasing_prompt,
     extract_candidates_from_markdown,
+    load_speaker_names,
     load_wordlist_file,
     scan_context_directory,
 )
@@ -126,3 +127,32 @@ def test_extract_candidates_wikilink_section_anchor() -> None:
     assert "Foudre" in names
     assert "OnlySection" not in names
     assert "" not in names
+
+
+def test_load_speaker_names(tmp_path: Path) -> None:
+    speakers_file = tmp_path / "custom_speakers.txt"
+    speakers_file.write_text(
+        "MJ (Tessaro)\n- Brakk\n• Merrow\n# comment\n", encoding="utf-8"
+    )
+
+    ctx_dir = tmp_path / "contexte"
+    ctx_dir.mkdir()
+    (ctx_dir / "speakers.txt").write_text(
+        "Ilvaris\nOskel\nDorsa\nQuillon\n", encoding="utf-8"
+    )
+
+    loaded = load_speaker_names(
+        speakers_file=speakers_file,
+        speakers_arg="MJ (Tessaro), Merrow",
+        context_dir=ctx_dir,
+    )
+
+    assert loaded == [
+        "MJ (Tessaro)",
+        "Merrow",
+        "Brakk",
+        "Ilvaris",
+        "Oskel",
+        "Dorsa",
+        "Quillon",
+    ]

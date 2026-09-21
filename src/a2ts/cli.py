@@ -27,6 +27,7 @@ from a2ts.timeline import (
 from a2ts.transcriber import get_engine
 from a2ts.vocab import (
     build_biasing_prompt,
+    load_speaker_names,
     load_wordlist_file,
     scan_context_directory,
 )
@@ -102,6 +103,18 @@ def run(
     slice_minutes: Annotated[
         float, typer.Option(help="Time slice window size in minutes")
     ] = 15.0,
+    speakers: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated list of known speaker names (e.g. 'MJ, Brakk, Oskel')"
+        ),
+    ] = None,
+    speakers_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to speakers text file (default auto-detects contexte/speakers.txt)"
+        ),
+    ] = None,
     interactive: Annotated[
         bool, typer.Option(help="Enable interactive QCM speaker review")
     ] = True,
@@ -191,7 +204,14 @@ def run(
     mapping_path = cache_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
     if interactive:
-        candidate_names = [e.name for e in entities]
+        known_speakers = load_speaker_names(
+            speakers_file=speakers_file,
+            speakers_arg=speakers,
+            context_dir=context_dir,
+        )
+        candidate_names = list(
+            dict.fromkeys(known_speakers + [e.name for e in entities])
+        )
         mapping = run_interactive_review(
             aligned_turns, candidate_names, existing_mapping=mapping
         )
@@ -254,6 +274,21 @@ def review(
     session_dir: Annotated[
         Path, typer.Argument(help="Path to session cache directory (.a2ts)")
     ] = Path(".a2ts"),
+    context_dir: Annotated[
+        Path, typer.Option(help="Directory containing Obsidian notes and speakers.txt")
+    ] = Path("contexte"),
+    speakers: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated list of known speaker names (e.g. 'MJ, Brakk, Oskel')"
+        ),
+    ] = None,
+    speakers_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to speakers text file (default auto-detects contexte/speakers.txt)"
+        ),
+    ] = None,
     output: Annotated[Path, typer.Option(help="Output markdown path")] = Path(
         "transcript.md"
     ),
@@ -276,11 +311,17 @@ def review(
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
 
-    candidate_names: list[str] = []
-    contexte_dir = Path("contexte")
-    if contexte_dir.is_dir():
-        candidate_names.extend(e.name for e in scan_context_directory(contexte_dir))
-    candidate_names.extend(mapping.cluster_defaults.values())
+    known_speakers = load_speaker_names(
+        speakers_file=speakers_file,
+        speakers_arg=speakers,
+        context_dir=context_dir,
+    )
+    candidate_names: list[str] = list(
+        dict.fromkeys(known_speakers + list(mapping.cluster_defaults.values()))
+    )
+    if context_dir.is_dir():
+        candidate_names.extend(e.name for e in scan_context_directory(context_dir))
+    candidate_names = list(dict.fromkeys(candidate_names))
 
     mapping = run_interactive_review(turns, candidate_names, existing_mapping=mapping)
     save_speakers_mapping(mapping, mapping_path)

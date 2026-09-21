@@ -183,3 +183,24 @@ def test_run_interactive_review_with_existing_mapping() -> None:
             "SPEAKER_01": "Bob",
         }
         assert mock_ask.call_count == 2
+
+
+def test_run_interactive_review_direct_free_text_entry() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Je prépare mon sort.",
+        ),
+    ]
+    candidates = ["Sentier de Triboar", "Phandalin"]
+    # User types "MJ (Tessaro)" directly without pressing 'c'
+    prompt_inputs = ["MJ (Tessaro)"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(turns, candidates)
+        assert mapping.cluster_defaults == {"SPEAKER_00": "MJ (Tessaro)"}
+        assert mock_ask.call_count == 1
