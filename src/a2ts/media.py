@@ -69,3 +69,40 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
         stderr_msg = e.stderr.strip() if e.stderr else ""
         raise RuntimeError(f"ffmpeg/ffprobe error: {stderr_msg}") from e
     return wav_path
+
+
+def play_audio_clip(
+    audio_path: Path,
+    start: float,
+    duration: float = 4.0,
+    player: str | None = None,
+) -> bool:
+    """Play a short audio snippet via ffplay (or specified player).
+
+    Returns True if playback completed cleanly, False otherwise.
+    """
+    if not audio_path.is_file():
+        return False
+
+    player_cmd = player or "ffplay"
+    cmd = [
+        player_cmd,
+        "-nodisp",
+        "-autoexit",
+        "-ss",
+        f"{max(0.0, start):.2f}",
+        "-t",
+        f"{max(0.1, duration):.2f}",
+        str(audio_path),
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=duration + 5.0,
+        )
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False

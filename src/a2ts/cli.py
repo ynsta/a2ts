@@ -126,6 +126,9 @@ def run(
     interactive: Annotated[
         bool, typer.Option(help="Enable interactive QCM speaker review")
     ] = True,
+    auto_play: Annotated[
+        bool, typer.Option(help="Auto-play audio sample during speaker review")
+    ] = True,
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
@@ -235,7 +238,11 @@ def run(
             dict.fromkeys(known_speakers + [e.name for e in entities])
         )
         mapping = run_interactive_review(
-            aligned_turns, candidate_names, existing_mapping=mapping
+            aligned_turns,
+            candidate_names,
+            existing_mapping=mapping,
+            audio_path=audio_path,
+            auto_play=auto_play,
         )
         save_speakers_mapping(mapping, mapping_path)
 
@@ -314,6 +321,9 @@ def review(
     output: Annotated[Path, typer.Option(help="Output markdown path")] = Path(
         "transcript.md"
     ),
+    auto_play: Annotated[
+        bool, typer.Option(help="Auto-play audio sample during speaker review")
+    ] = True,
 ) -> None:
     """Re-run interactive speaker review on cached session turns."""
     turns_path = session_dir / "turns.json"
@@ -324,11 +334,20 @@ def review(
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
     turns = [AlignedTurn.model_validate(t) for t in turns_data]
 
+    audio_path: Path | None = None
     session_path = session_dir / "session.json"
     if session_path.is_file():
-        _ = SessionMetadata.model_validate_json(
-            session_path.read_text(encoding="utf-8")
-        )
+        try:
+            session_meta = SessionMetadata.model_validate_json(
+                session_path.read_text(encoding="utf-8")
+            )
+            cached_wav = session_dir / "audio_cache" / f"{session_meta.media_hash}.wav"
+            if cached_wav.is_file():
+                audio_path = cached_wav
+            elif Path(session_meta.media_path).is_file():
+                audio_path = Path(session_meta.media_path)
+        except (ValueError, KeyError, OSError):
+            audio_path = None
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
@@ -345,7 +364,13 @@ def review(
         candidate_names.extend(e.name for e in scan_context_directory(context_dir))
     candidate_names = list(dict.fromkeys(candidate_names))
 
-    mapping = run_interactive_review(turns, candidate_names, existing_mapping=mapping)
+    mapping = run_interactive_review(
+        turns,
+        candidate_names,
+        existing_mapping=mapping,
+        audio_path=audio_path,
+        auto_play=auto_play,
+    )
     save_speakers_mapping(mapping, mapping_path)
 
     aligned_turns = apply_speakers_mapping(turns, mapping)

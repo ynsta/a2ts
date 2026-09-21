@@ -254,6 +254,25 @@ def test_review_command(mock_review: MagicMock, tmp_path: Path) -> None:
         json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
     )
 
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "1234abcd",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-09-21T00:00:00Z",
+        "output_path": "transcript.md",
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+    audio_dir = session_dir / "audio_cache"
+    audio_dir.mkdir()
+    audio_file = audio_dir / "1234abcd.wav"
+    audio_file.touch()
+
     mock_review.return_value = SpeakersMapping(
         cluster_defaults={"SPEAKER_00": "Garrick"}
     )
@@ -272,6 +291,8 @@ def test_review_command(mock_review: MagicMock, tmp_path: Path) -> None:
     content = out_file.read_text(encoding="utf-8")
     assert "### [00:00:00 - 00:00:05] Garrick" in content
     assert "Hello world." in content
+    assert mock_review.call_args[1]["audio_path"] == audio_file
+    assert mock_review.call_args[1]["auto_play"] is True
 
 
 def test_review_command_missing_turns(tmp_path: Path) -> None:

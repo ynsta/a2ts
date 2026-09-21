@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
+from a2ts.media import (
+    compute_file_hash,
+    extract_audio_to_wav,
+    play_audio_clip,
+    probe_media,
+)
 
 
 def test_compute_file_hash(tmp_path: Path) -> None:
@@ -105,3 +110,35 @@ def test_extract_audio_to_wav_subprocess_error(
     with pytest.raises(RuntimeError) as exc_info:
         extract_audio_to_wav(input_file, out_dir)
     assert "ffmpeg/ffprobe error: Error while decoding stream" in str(exc_info.value)
+
+
+def test_play_audio_clip_nonexistent_file(tmp_path: Path) -> None:
+    non_existent = tmp_path / "missing.wav"
+    assert play_audio_clip(non_existent, start=0.0, duration=2.0) is False
+
+
+@patch("subprocess.run")
+def test_play_audio_clip_success(mock_run: MagicMock, tmp_path: Path) -> None:
+    audio_file = tmp_path / "test.wav"
+    audio_file.write_bytes(b"dummy wav data")
+
+    result = play_audio_clip(audio_file, start=12.5, duration=3.5)
+    assert result is True
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "ffplay"
+    assert "-nodisp" in cmd
+    assert "-autoexit" in cmd
+    assert "-ss" in cmd and "12.50" in cmd
+    assert "-t" in cmd and "3.50" in cmd
+    assert str(audio_file) in cmd
+
+
+@patch("subprocess.run")
+def test_play_audio_clip_failure(mock_run: MagicMock, tmp_path: Path) -> None:
+    audio_file = tmp_path / "test.wav"
+    audio_file.write_bytes(b"dummy wav data")
+    mock_run.side_effect = subprocess.CalledProcessError(returncode=1, cmd=["ffplay"])
+
+    result = play_audio_clip(audio_file, start=0.0, duration=2.0)
+    assert result is False
