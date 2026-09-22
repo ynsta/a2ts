@@ -50,45 +50,31 @@ def get_embedding_model(device: str = "cuda") -> Any:
     return _CLASSIFIER
 
 
-def diarize_segments(
+def extract_embeddings(
     audio_path: Path,
     segments: list[RawSegment],
-    num_speakers: int | None = None,
-    distance_threshold: float = 0.55,
     device: str = "cuda",
-    cache_path: Path | None = None,
-) -> list[SpeakerTurn]:
-    """Cluster raw speech segments into acoustic speaker turns."""
+    cache_prefix: Path | None = None,
+) -> tuple[np.ndarray, list[int]]:
+    """Extract and cache speaker embeddings for speech segments."""
+    if cache_prefix is not None:
+        emb_file = Path(f"{cache_prefix}_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_indices.json")
+        if emb_file.is_file() and idx_file.is_file():
+            console.print(
+                f"[bold cyan]Loading cached embeddings from {cache_prefix}...[/bold cyan]"
+            )
+            try:
+                emb_matrix = np.load(emb_file)
+                cached_indices = [
+                    int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+                ]
+                return emb_matrix, cached_indices
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.debug("Failed to read embedding cache %s: %s", cache_prefix, exc)
+
     if not segments:
-        return []
-
-    # Check cache
-    if cache_path and cache_path.is_file():
-        console.print(
-            f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
-        )
-        try:
-            cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            return [SpeakerTurn.model_validate(item) for item in cached_data]
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
-
-    if len(segments) == 1:
-        single_turn = [
-            SpeakerTurn(
-                id=0,
-                start=segments[0].start,
-                end=segments[0].end,
-                cluster_id="SPEAKER_00",
-            )
-        ]
-        if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps([t.model_dump() for t in single_turn], indent=2),
-                encoding="utf-8",
-            )
-        return single_turn
+        return np.empty((0, 0), dtype=np.float32), []
 
     audio, sr = sf.read(str(audio_path), dtype="float32")
     if audio.ndim > 1:
@@ -130,26 +116,93 @@ def diarize_segments(
             progress.update(task, advance=1)
 
     if not embeddings:
+        return np.empty((0, 0), dtype=np.float32), []
+
+    emb_matrix = np.array(embeddings, dtype=np.float32)
+    # Normalize embeddings to unit norm for cosine distance
+    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    emb_matrix = emb_matrix / norms
+
+    if cache_prefix is not None:
+        emb_file = Path(f"{cache_prefix}_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file.parent.mkdir(parents=True, exist_ok=True)
+        np.save(emb_file, emb_matrix)
+        idx_file.write_text(
+            json.dumps(valid_indices, indent=2),
+            encoding="utf-8",
+        )
+
+    return emb_matrix, valid_indices
+
+
+def diarize_segments(
+    audio_path: Path,
+    segments: list[RawSegment],
+    num_speakers: int | None = None,
+    distance_threshold: float = 0.60,
+    device: str = "cuda",
+    cache_path: Path | None = None,
+    embeddings_cache_prefix: Path | None = None,
+) -> list[SpeakerTurn]:
+    """Cluster raw speech segments into acoustic speaker turns."""
+    if not segments:
+        return []
+
+    # Check cache
+    if cache_path and cache_path.is_file():
+        console.print(
+            f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+        )
+        try:
+            cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
+            return [SpeakerTurn.model_validate(item) for item in cached_data]
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
+
+    if len(segments) == 1:
+        single_turn = [
+            SpeakerTurn(
+                id=0,
+                start=segments[0].start,
+                end=segments[0].end,
+                cluster_id="SPEAKER_00",
+            )
+        ]
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps([t.model_dump() for t in single_turn], indent=2),
+                encoding="utf-8",
+            )
+        return single_turn
+
+    emb_matrix, valid_indices = extract_embeddings(
+        audio_path=audio_path,
+        segments=segments,
+        device=device,
+        cache_prefix=embeddings_cache_prefix,
+    )
+
+    if len(valid_indices) == 0:
         turns = [
             SpeakerTurn(id=i, start=s.start, end=s.end, cluster_id="SPEAKER_00")
             for i, s in enumerate(segments)
         ]
         return turns
 
-    emb_matrix = np.array(embeddings)
-    # Normalize embeddings to unit norm for cosine distance
-    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    emb_matrix = emb_matrix / norms
-
     # Perform Agglomerative Clustering
-    if num_speakers is not None:
-        actual_clusters = min(num_speakers, len(embeddings))
+    if len(valid_indices) <= 1:
+        labels = np.zeros(len(valid_indices), dtype=int)
+    elif num_speakers is not None:
+        actual_clusters = min(num_speakers, len(valid_indices))
         clusterer = AgglomerativeClustering(
             n_clusters=actual_clusters,
             metric="cosine",
             linkage="average",
         )
+        labels = clusterer.fit_predict(emb_matrix)
     else:
         clusterer = AgglomerativeClustering(
             n_clusters=None,
@@ -157,8 +210,7 @@ def diarize_segments(
             metric="cosine",
             linkage="average",
         )
-
-    labels = clusterer.fit_predict(emb_matrix)
+        labels = clusterer.fit_predict(emb_matrix)
 
     # Reconstruct cluster labels for all segments
     full_labels = [0] * len(segments)

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import torch
 
 from a2ts.diarizer import diarize_segments
 from a2ts.models import RawSegment
@@ -79,3 +80,90 @@ def test_diarize_segments_clustering(
     assert turns[0].cluster_id == turns[2].cluster_id
     assert turns[0].cluster_id != turns[1].cluster_id
     assert cache_file.is_file()
+
+
+def test_extract_embeddings_caches_to_npy(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from a2ts.diarizer import extract_embeddings
+    from a2ts.models import RawSegment
+
+    segments = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Hello"),
+        RawSegment(id=1, start=1.5, end=2.5, text="World"),
+    ]
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+    cache_prefix = tmp_path / "test_emb"
+
+    with (
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
+        patch("a2ts.diarizer.get_embedding_model") as mock_model,
+    ):
+        mock_classifier = MagicMock()
+        mock_classifier.encode_batch.side_effect = [
+            torch.tensor([[1.0, 0.0]]),
+            torch.tensor([[0.0, 1.0]]),
+        ]
+        mock_model.return_value = mock_classifier
+
+        emb_matrix, valid_indices = extract_embeddings(
+            audio_path, segments, device="cpu", cache_prefix=cache_prefix
+        )
+
+        assert emb_matrix.shape == (2, 2)
+        assert valid_indices == [0, 1]
+        assert (tmp_path / "test_emb_embeddings.npy").is_file()
+        assert (tmp_path / "test_emb_indices.json").is_file()
+
+        # Second call should load from cache without calling get_embedding_model
+        mock_model.reset_mock()
+        emb2, indices2 = extract_embeddings(
+            audio_path, segments, device="cpu", cache_prefix=cache_prefix
+        )
+        assert np.allclose(emb_matrix, emb2)
+        assert indices2 == valid_indices
+        mock_model.assert_not_called()
+
+
+def test_diarize_segments_with_num_speakers(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from a2ts.diarizer import diarize_segments
+    from a2ts.models import RawSegment
+
+    segments = [
+        RawSegment(id=0, start=0.0, end=1.0, text="A"),
+        RawSegment(id=1, start=1.0, end=2.0, text="B"),
+        RawSegment(id=2, start=2.0, end=3.0, text="C"),
+    ]
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+
+    # 3 distinct vectors forced into 2 clusters
+    cached_emb = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.9, 0.1, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    with patch(
+        "a2ts.diarizer.extract_embeddings", return_value=(cached_emb, [0, 1, 2])
+    ):
+        turns = diarize_segments(
+            audio_path,
+            segments,
+            num_speakers=2,
+            device="cpu",
+        )
+        assert len(turns) == 3
+        clusters = {t.cluster_id for t in turns}
+        assert len(clusters) == 2
+        # segments 0 and 1 should cluster together
+        assert turns[0].cluster_id == turns[1].cluster_id
+        assert turns[2].cluster_id != turns[0].cluster_id
