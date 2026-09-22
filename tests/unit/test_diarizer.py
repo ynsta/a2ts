@@ -290,3 +290,113 @@ def test_load_voice_profiles_invalid_or_missing(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad.json"
     bad_file.write_text("not json", encoding="utf-8")
     assert load_voice_profiles(bad_file) is None
+
+
+def test_classify_clusters_to_profiles() -> None:
+    from a2ts.diarizer import classify_clusters_to_profiles
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    db = VoiceProfilesDatabase(
+        speakers={
+            "Brakk": VoiceProfile(
+                speaker_name="Brakk",
+                centroid=[1.0, 0.0],
+                sample_count=2,
+            ),
+            "Merrow": VoiceProfile(
+                speaker_name="Merrow",
+                centroid=[0.0, 1.0],
+                sample_count=2,
+            ),
+        }
+    )
+
+    cluster_embs = {
+        "SPEAKER_00": [np.array([0.9, 0.1], dtype=np.float32)],
+        "SPEAKER_01": [np.array([0.2, 0.8], dtype=np.float32)],
+        "SPEAKER_02": [np.array([0.5, 0.5], dtype=np.float32)],  # sim ~0.707 to both
+        "SPEAKER_03": [np.array([-0.9, -0.1], dtype=np.float32)],  # negative sim
+    }
+
+    # Open set with threshold 0.80
+    open_matches = classify_clusters_to_profiles(
+        cluster_embs, db, similarity_threshold=0.80, closed_set=False
+    )
+    assert "SPEAKER_00" in open_matches
+    assert open_matches["SPEAKER_00"][0] == "Brakk"
+    assert "SPEAKER_01" in open_matches
+    assert open_matches["SPEAKER_01"][0] == "Merrow"
+    assert "SPEAKER_02" not in open_matches  # sim ~0.707 < 0.80
+    assert "SPEAKER_03" not in open_matches
+
+    # Closed set: all clusters must be assigned to closest profile
+    closed_matches = classify_clusters_to_profiles(cluster_embs, db, closed_set=True)
+    assert closed_matches["SPEAKER_00"][0] == "Brakk"
+    assert closed_matches["SPEAKER_01"][0] == "Merrow"
+    assert closed_matches["SPEAKER_02"][0] in ("Brakk", "Merrow")
+    assert (
+        closed_matches["SPEAKER_03"][0] == "Merrow"
+        or closed_matches["SPEAKER_03"][0] == "Brakk"
+    )
+    assert len(closed_matches) == 4
+
+
+def test_propagate_speaker_labels() -> None:
+    from a2ts.diarizer import propagate_speaker_labels
+    from a2ts.models import AlignedTurn, SpeakersMapping
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=1.0,
+            speaker="SPEAKER_99",
+            cluster_id="SPEAKER_99",
+            text="unassigned leading",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=1.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="hello",
+        ),
+        AlignedTurn(
+            turn_id=2,
+            start=2.0,
+            end=2.2,
+            speaker="SPEAKER_88",
+            cluster_id="SPEAKER_88",
+            text="quick blip",
+        ),
+        AlignedTurn(
+            turn_id=3,
+            start=2.2,
+            end=3.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="world",
+        ),
+        AlignedTurn(
+            turn_id=4,
+            start=3.0,
+            end=3.5,
+            speaker="SPEAKER_77",
+            cluster_id="SPEAKER_77",
+            text="trailing blip",
+        ),
+    ]
+
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Brakk", "SPEAKER_01": "Dorsa"}
+    )
+
+    propagate_speaker_labels(turns, mapping)
+
+    # turn 0 was leading unassigned -> propagated from turn 1 (Brakk)
+    assert mapping.turn_overrides[0] == "Brakk"
+    # turn 2 was between Brakk and Dorsa -> forward propagated from turn 1 (Brakk)
+    assert mapping.turn_overrides[2] == "Brakk"
+    # turn 4 was trailing unassigned -> propagated from turn 3 (Dorsa)
+    assert mapping.turn_overrides[4] == "Dorsa"

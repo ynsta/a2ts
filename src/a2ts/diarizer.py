@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -436,6 +437,9 @@ def match_embeddings_to_profiles(
     c_norms[c_norms == 0] = 1.0
     norm_centroids = centroids / c_norms
 
+    if norm_embeddings.shape[1] != norm_centroids.shape[1]:
+        return {}
+
     sim_matrix = np.dot(norm_embeddings, norm_centroids.T)
 
     matches: dict[int, tuple[str, float]] = {}
@@ -448,3 +452,110 @@ def match_embeddings_to_profiles(
             matches[i] = (speaker_names[k_star], score_val)
 
     return matches
+
+
+def classify_clusters_to_profiles(
+    cluster_embeddings: Mapping[str, Sequence[np.ndarray] | np.ndarray],
+    db: VoiceProfilesDatabase,
+    similarity_threshold: float = 0.60,
+    closed_set: bool = False,
+) -> dict[str, tuple[str, float]]:
+    """Classify speech clusters to enrolled voice profiles using cluster mean embeddings.
+
+    Returns mapping from cluster_id to (speaker_name, similarity_score).
+    If closed_set is True, assigns each cluster to argmax similarity among enrolled profiles
+    (ignoring similarity_threshold, provided at least one profile exists).
+    If closed_set is False, only assigns if max similarity >= similarity_threshold.
+    """
+    if not cluster_embeddings or not db.speakers:
+        return {}
+
+    speaker_names = list(db.speakers.keys())
+    centroids = np.array(
+        [db.speakers[name].centroid for name in speaker_names],
+        dtype=np.float32,
+    )
+    c_norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+    c_norms[c_norms == 0] = 1.0
+    norm_centroids = centroids / c_norms
+
+    assignments: dict[str, tuple[str, float]] = {}
+
+    for cid, embs in cluster_embeddings.items():
+        if len(embs) == 0:
+            continue
+        emb_arr = np.asarray(embs, dtype=np.float32)
+        if emb_arr.ndim == 1:
+            emb_arr = emb_arr.reshape(1, -1)
+        if emb_arr.shape[1] != norm_centroids.shape[1]:
+            continue
+        mean_emb = np.mean(emb_arr, axis=0)
+        norm = float(np.linalg.norm(mean_emb))
+        if norm > 0:
+            mean_emb = mean_emb / norm
+
+        sims = np.dot(norm_centroids, mean_emb)  # shape: (num_speakers,)
+        best_idx = int(np.argmax(sims))
+        best_score = float(sims[best_idx])
+
+        if closed_set or best_score >= similarity_threshold:
+            assignments[cid] = (speaker_names[best_idx], best_score)
+
+    return assignments
+
+
+def propagate_speaker_labels(
+    turns: Sequence[SpeakerTurn | AlignedTurn],
+    mapping: SpeakersMapping,
+    unassigned_prefix: str = "SPEAKER_",
+) -> None:
+    """Propagate neighboring speaker labels to unassigned turns in place.
+
+    For turns without embeddings or unmapped clusters (e.g. short audio blips),
+    propagates the closest preceding (or succeeding) assigned speaker name in mapping.
+    Modifies mapping.turn_overrides for those specific turns so that apply_speakers_mapping
+    resolves them to real speaker names without leaving generic SPEAKER_XX tags.
+    """
+    if not turns:
+        return
+
+    resolved_names: list[str] = []
+    for turn in turns:
+        t_id = getattr(turn, "turn_id", getattr(turn, "id", 0))
+        cid = turn.cluster_id
+        name = (
+            mapping.turn_overrides.get(t_id) or mapping.cluster_defaults.get(cid) or cid
+        )
+        resolved_names.append(name)
+
+    # 1. Forward pass: propagate last known assigned speaker
+    last_known: str | None = None
+    for i, name in enumerate(resolved_names):
+        if not name.startswith(unassigned_prefix):
+            last_known = name
+        elif last_known is not None:
+            resolved_names[i] = last_known
+
+    # 2. Backward pass: propagate next known assigned speaker (for leading unassigned turns)
+    next_known: str | None = None
+    for i in range(len(resolved_names) - 1, -1, -1):
+        name = resolved_names[i]
+        if not name.startswith(unassigned_prefix):
+            next_known = name
+        elif next_known is not None:
+            resolved_names[i] = next_known
+
+    # 3. Apply to mapping.turn_overrides for any turn that changed
+    for i, turn in enumerate(turns):
+        t_id = getattr(turn, "turn_id", getattr(turn, "id", 0))
+        orig_cid = turn.cluster_id
+        orig_name = (
+            mapping.turn_overrides.get(t_id)
+            or mapping.cluster_defaults.get(orig_cid)
+            or orig_cid
+        )
+        propagated_name = resolved_names[i]
+        if orig_name != propagated_name and not propagated_name.startswith(
+            unassigned_prefix
+        ):
+            mapping.turn_overrides[t_id] = propagated_name

@@ -768,3 +768,85 @@ def test_review_with_filter_options(tmp_path: Path) -> None:
         assert kwargs["min_turns"] == 3
         assert kwargs["min_duration"] == 10.0
         assert kwargs["filter_slice"] == 1
+
+
+def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
+    """Test recluster in closed-set mode assigns all clusters and propagates labels."""
+    import numpy as np
+
+    from a2ts.models import (
+        RawSegment,
+        SessionMetadata,
+        VoiceProfile,
+        VoiceProfilesDatabase,
+    )
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash_closed",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "recluster_closed.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    raw_segs = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Turn 1", words=[]),
+        RawSegment(id=1, start=1.5, end=2.5, text="Turn 2", words=[]),
+        RawSegment(id=2, start=2.5, end=3.0, text="Turn 3 (short blip)", words=[]),
+    ]
+    (transcripts_dir / "hash_closed_whisper.json").write_text(
+        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+    )
+
+    # 2 embeddings for first two segments; segment 2 has no embedding (short blip)
+    np.save(
+        diar_dir / "hash_closed_embeddings.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    (diar_dir / "hash_closed_indices.json").write_text("[0, 1]", encoding="utf-8")
+
+    # Create voice profiles with 2D matching centroids
+    vp_path = tmp_path / "profiles.json"
+    vp_db = VoiceProfilesDatabase(
+        speakers={
+            "Brakk": VoiceProfile(
+                speaker_name="Brakk", centroid=[1.0, 0.0], sample_count=5
+            ),
+            "Merrow": VoiceProfile(
+                speaker_name="Merrow", centroid=[0.0, 1.0], sample_count=5
+            ),
+        }
+    )
+    vp_path.write_text(vp_db.model_dump_json(), encoding="utf-8")
+
+    out_file = tmp_path / "recluster_closed.md"
+    result = runner.invoke(
+        app,
+        [
+            "recluster",
+            str(session_dir),
+            "--voice-profiles",
+            str(vp_path),
+            "--closed-set",
+            "--output",
+            str(out_file),
+        ],
+    )
+    assert result.exit_code == 0
+    assert out_file.is_file()
+    content = out_file.read_text(encoding="utf-8")
+    assert "SPEAKER_" not in content
+    assert "Brakk" in content
+    assert "Merrow" in content

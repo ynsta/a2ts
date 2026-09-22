@@ -14,10 +14,11 @@ from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyp
 
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
 from a2ts.diarizer import (
+    classify_clusters_to_profiles,
     compute_voice_profiles,
     diarize_segments,
     load_voice_profiles,
-    match_embeddings_to_profiles,
+    propagate_speaker_labels,
     save_voice_profiles,
 )
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
@@ -140,6 +141,13 @@ def run(
         float,
         typer.Option(help="Cosine similarity threshold for matching voice profiles"),
     ] = 0.60,
+    closed_set: Annotated[
+        bool,
+        typer.Option(
+            "--closed-set/--no-closed-set",
+            help="In closed-set mode, map all clusters to nearest enrolled voice profile and propagate labels",
+        ),
+    ] = False,
     speakers: Annotated[
         str | None,
         typer.Option(
@@ -317,41 +325,27 @@ def run(
                     int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
                 ]
                 if len(emb_matrix) > 0 and len(valid_indices) > 0:
-                    matches = match_embeddings_to_profiles(
-                        emb_matrix,
-                        loaded_db,
-                        similarity_threshold=profile_threshold,
-                    )
                     seg_to_cluster = {
                         turn.id: turn.cluster_id for turn in speaker_turns
                     }
-                    cluster_total: dict[str, int] = {}
-                    cluster_matches: dict[str, dict[str, int]] = {}
+                    cluster_embs: dict[str, list[np.ndarray]] = {}
                     for idx_emb, seg_idx in enumerate(valid_indices):
                         cid = seg_to_cluster.get(seg_idx)
-                        if cid is None:
-                            continue
-                        cluster_total[cid] = cluster_total.get(cid, 0) + 1
-                        if idx_emb in matches:
-                            spk_name, _ = matches[idx_emb]
-                            cluster_matches.setdefault(cid, {})
-                            cluster_matches[cid][spk_name] = (
-                                cluster_matches[cid].get(spk_name, 0) + 1
-                            )
+                        if cid is not None:
+                            cluster_embs.setdefault(cid, []).append(emb_matrix[idx_emb])
 
-                    for cid, total in cluster_total.items():
-                        if cid in mapping.cluster_defaults:
-                            continue
-                        if cid in cluster_matches:
-                            best_spk, count = max(
-                                cluster_matches[cid].items(),
-                                key=lambda item: item[1],
+                    cluster_matches = classify_clusters_to_profiles(
+                        cluster_embs,
+                        loaded_db,
+                        similarity_threshold=profile_threshold,
+                        closed_set=closed_set,
+                    )
+                    for cid, (best_spk, score) in cluster_matches.items():
+                        if cid not in mapping.cluster_defaults:
+                            mapping.cluster_defaults[cid] = best_spk
+                            console.print(
+                                f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
                             )
-                            if count > total / 2:
-                                mapping.cluster_defaults[cid] = best_spk
-                                console.print(
-                                    f"[cyan]Matched voice profile for {cid}: {best_spk} ({count}/{total} segments)[/cyan]"
-                                )
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
                     f"[yellow]Warning: Voice profile matching skipped: {exc}[/yellow]"
@@ -391,6 +385,9 @@ def run(
             min_duration=review_min_duration,
             filter_slice=review_time_slice,
         )
+
+    if closed_set:
+        propagate_speaker_labels(aligned_turns, mapping)
 
     save_speakers_mapping(mapping, mapping_path)
     aligned_turns = apply_speakers_mapping(aligned_turns, mapping)
@@ -487,6 +484,17 @@ def review(
         Path,
         typer.Option(help="Path to voice profiles database JSON"),
     ] = Path("contexte/voice_profiles.json"),
+    profile_threshold: Annotated[
+        float,
+        typer.Option(help="Cosine similarity threshold for matching voice profiles"),
+    ] = 0.60,
+    closed_set: Annotated[
+        bool,
+        typer.Option(
+            "--closed-set/--no-closed-set",
+            help="In closed-set mode, map all clusters to nearest enrolled voice profile and propagate labels",
+        ),
+    ] = False,
     speakers: Annotated[
         str | None,
         typer.Option(
@@ -573,47 +581,6 @@ def review(
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
 
-    known_speakers = load_speaker_names(
-        speakers_file=speakers_file,
-        speakers_arg=speakers,
-        context_dir=context_dir,
-    )
-    profile_speakers: list[str] = []
-    if voice_profiles.is_file():
-        loaded_vp = load_voice_profiles(voice_profiles)
-        if loaded_vp:
-            profile_speakers = list(loaded_vp.speakers.keys())
-    candidate_names: list[str] = list(
-        dict.fromkeys(
-            known_speakers + profile_speakers + list(mapping.cluster_defaults.values())
-        )
-    )
-    if context_dir.is_dir():
-        candidate_names.extend(e.name for e in scan_context_directory(context_dir))
-    candidate_names = list(dict.fromkeys(candidate_names))
-
-    filter_clusters: list[str] | None = None
-    if cluster:
-        filter_clusters = [c.strip() for c in cluster.split(",") if c.strip()]
-
-    mapping = run_interactive_review(
-        turns,
-        candidate_names,
-        existing_mapping=mapping,
-        audio_path=audio_path,
-        auto_play=auto_play,
-        audio_padding=audio_padding,
-        filter_clusters=filter_clusters,
-        unassigned_only=unassigned_only,
-        min_turns=min_turns,
-        min_duration=min_duration,
-        filter_slice=time_slice,
-    )
-    save_speakers_mapping(mapping, mapping_path)
-
-    aligned_turns = apply_speakers_mapping(turns, mapping)
-
-    # Auto-enroll / update voice profiles if cached embeddings exist
     media_hash: str | None = None
     if session_path.is_file():
         try:
@@ -642,6 +609,86 @@ def review(
                 indices_json = i_file
                 break
 
+    loaded_vp: VoiceProfilesDatabase | None = None
+    if voice_profiles.is_file():
+        loaded_vp = load_voice_profiles(voice_profiles)
+        if (
+            loaded_vp
+            and loaded_vp.speakers
+            and embeddings_npy
+            and indices_json
+            and embeddings_npy.is_file()
+            and indices_json.is_file()
+        ):
+            try:
+                embeddings = np.load(embeddings_npy)
+                valid_indices = [
+                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
+                ]
+                cluster_embs: dict[str, list[np.ndarray]] = {}
+                for idx_emb, seg_idx in enumerate(valid_indices):
+                    if seg_idx < len(turns):
+                        cid = turns[seg_idx].cluster_id
+                        cluster_embs.setdefault(cid, []).append(embeddings[idx_emb])
+
+                cluster_matches = classify_clusters_to_profiles(
+                    cluster_embs,
+                    loaded_vp,
+                    similarity_threshold=profile_threshold,
+                    closed_set=closed_set,
+                )
+                for cid, (best_spk, score) in cluster_matches.items():
+                    if cid not in mapping.cluster_defaults:
+                        mapping.cluster_defaults[cid] = best_spk
+                        console.print(
+                            f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
+                        )
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                console.print(
+                    f"[yellow]Warning: Voice profile matching skipped in review: {exc}[/yellow]"
+                )
+
+    known_speakers = load_speaker_names(
+        speakers_file=speakers_file,
+        speakers_arg=speakers,
+        context_dir=context_dir,
+    )
+    profile_speakers: list[str] = list(loaded_vp.speakers.keys()) if loaded_vp else []
+    candidate_names: list[str] = list(
+        dict.fromkeys(
+            known_speakers + profile_speakers + list(mapping.cluster_defaults.values())
+        )
+    )
+    if context_dir.is_dir():
+        candidate_names.extend(e.name for e in scan_context_directory(context_dir))
+    candidate_names = list(dict.fromkeys(candidate_names))
+
+    filter_clusters: list[str] | None = None
+    if cluster:
+        filter_clusters = [c.strip() for c in cluster.split(",") if c.strip()]
+
+    mapping = run_interactive_review(
+        turns,
+        candidate_names,
+        existing_mapping=mapping,
+        audio_path=audio_path,
+        auto_play=auto_play,
+        audio_padding=audio_padding,
+        filter_clusters=filter_clusters,
+        unassigned_only=unassigned_only,
+        min_turns=min_turns,
+        min_duration=min_duration,
+        filter_slice=time_slice,
+    )
+
+    if closed_set:
+        propagate_speaker_labels(turns, mapping)
+
+    save_speakers_mapping(mapping, mapping_path)
+
+    aligned_turns = apply_speakers_mapping(turns, mapping)
+
+    # Auto-enroll / update voice profiles if cached embeddings exist
     if (
         embeddings_npy
         and indices_json
@@ -762,6 +809,21 @@ def recluster(
         Path | None,
         typer.Option(help="Output markdown transcript path"),
     ] = None,
+    voice_profiles: Annotated[
+        Path,
+        typer.Option(help="Path to voice profiles database JSON"),
+    ] = Path("contexte/voice_profiles.json"),
+    profile_threshold: Annotated[
+        float,
+        typer.Option(help="Cosine similarity threshold for matching voice profiles"),
+    ] = 0.60,
+    closed_set: Annotated[
+        bool,
+        typer.Option(
+            "--closed-set/--no-closed-set",
+            help="In closed-set mode, map all clusters to nearest enrolled voice profile and propagate labels",
+        ),
+    ] = False,
 ) -> None:
     """Re-cluster cached speaker embeddings and regenerate transcript."""
     session_path = session_dir / "session.json"
@@ -910,6 +972,33 @@ def recluster(
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
+
+    if voice_profiles.is_file():
+        loaded_db = load_voice_profiles(voice_profiles)
+        if loaded_db and loaded_db.speakers:
+            cluster_embs: dict[str, list[np.ndarray]] = {}
+            for idx_emb, seg_idx in enumerate(valid_indices):
+                if seg_idx < len(speaker_turns):
+                    cid = speaker_turns[seg_idx].cluster_id
+                    cluster_embs.setdefault(cid, []).append(emb_matrix[idx_emb])
+
+            cluster_matches = classify_clusters_to_profiles(
+                cluster_embs,
+                loaded_db,
+                similarity_threshold=profile_threshold,
+                closed_set=closed_set,
+            )
+            for cid, (best_spk, score) in cluster_matches.items():
+                if cid not in mapping.cluster_defaults:
+                    mapping.cluster_defaults[cid] = best_spk
+                    console.print(
+                        f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
+                    )
+
+    if closed_set:
+        propagate_speaker_labels(aligned_turns, mapping)
+
+    save_speakers_mapping(mapping, mapping_path)
     mapped_turns = apply_speakers_mapping(aligned_turns, mapping)
 
     debounced_turns = debounce_consecutive_turns(mapped_turns)
