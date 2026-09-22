@@ -71,6 +71,61 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
     return wav_path
 
 
+def play_audio_clip_async(
+    audio_path: Path,
+    start: float,
+    duration: float = 4.0,
+    pad_before: float = 0.0,
+    pad_after: float = 0.0,
+    player: str | None = None,
+) -> subprocess.Popen[bytes] | None:
+    """Launch playback of an audio snippet asynchronously in the background.
+
+    Returns the subprocess.Popen object if started, or None if failed.
+    """
+    if not audio_path.is_file():
+        return None
+
+    actual_start = max(0.0, start - pad_before)
+    actual_duration = max(0.1, (start + duration + pad_after) - actual_start)
+
+    player_cmd = player or "ffplay"
+    cmd = [
+        player_cmd,
+        "-nodisp",
+        "-autoexit",
+        "-ss",
+        f"{actual_start:.2f}",
+        "-t",
+        f"{actual_duration:.2f}",
+        str(audio_path),
+    ]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+
+
+def stop_audio_playback(proc: subprocess.Popen[bytes] | None) -> None:
+    """Safely terminate a background audio playback process if running."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
 def play_audio_clip(
     audio_path: Path,
     start: float,

@@ -1,13 +1,14 @@
 """Interactive speaker attribution review and mapping persistence."""
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 from rich.prompt import Prompt
 
-from a2ts.media import play_audio_clip
+from a2ts.media import play_audio_clip_async, stop_audio_playback
 from a2ts.models import AlignedTurn, SpeakersMapping
 
 console = Console()
@@ -133,13 +134,15 @@ def run_interactive_review(
         console.print("  [t] Review this cluster by time slices (temporal split)")
         console.print("  [c] Type custom name (or type speaker name directly)")
 
+        active_proc: subprocess.Popen[bytes] | None = None
         if auto_play and audio_path and sample_turns:
             first_turn = sample_turns[0]
             clip_dur = max(1.5, first_turn.end - first_turn.start)
             console.print(
                 f"[dim]🔊 Playing sample 1 audio (±{audio_padding:.1f}s context)...[/dim]"
             )
-            play_audio_clip(
+            stop_audio_playback(active_proc)
+            active_proc = play_audio_clip_async(
                 audio_path,
                 start=first_turn.start,
                 duration=clip_dur,
@@ -152,6 +155,7 @@ def run_interactive_review(
                 "Attribution choice (number, custom name, [p]lay, [w]ide, [s]kip, or [t]ime-slice)",
                 default="s",
             ).strip()
+            stop_audio_playback(active_proc)
 
             choice_lower = raw_choice.lower()
             is_wide = choice_lower in (
@@ -193,7 +197,8 @@ def run_interactive_review(
                     console.print(
                         f"[dim]🔊 Playing sample {p_idx + 1} audio ({pad_lbl} context)...[/dim]"
                     )
-                    play_audio_clip(
+                    stop_audio_playback(active_proc)
+                    active_proc = play_audio_clip_async(
                         audio_path,
                         start=target_turn.start,
                         duration=clip_dur,
@@ -263,13 +268,15 @@ def run_interactive_review(
                             "  [w] Play wider slice audio context (or type w1, w2, w3)"
                         )
 
+                    slice_proc: subprocess.Popen[bytes] | None = None
                     if auto_play and audio_path and slice_samples:
                         first_s_turn = slice_samples[0]
                         clip_dur = max(1.5, first_s_turn.end - first_s_turn.start)
                         console.print(
                             f"[dim]🔊 Playing Slice {slice_id} sample 1 audio (±{audio_padding:.1f}s context)...[/dim]"
                         )
-                        play_audio_clip(
+                        stop_audio_playback(slice_proc)
+                        slice_proc = play_audio_clip_async(
                             audio_path,
                             start=first_s_turn.start,
                             duration=clip_dur,
@@ -282,6 +289,7 @@ def run_interactive_review(
                             f"Attribution for Slice {slice_id} (number, custom name, [p]lay, [w]ide, or [s]kip)",
                             default="s",
                         ).strip()
+                        stop_audio_playback(slice_proc)
 
                         s_lower = slice_choice.lower()
                         s_is_wide = s_lower in (
@@ -323,7 +331,8 @@ def run_interactive_review(
                                 console.print(
                                     f"[dim]🔊 Playing Slice {slice_id} sample {p_idx + 1} audio ({pad_lbl} context)...[/dim]"
                                 )
-                                play_audio_clip(
+                                stop_audio_playback(slice_proc)
+                                slice_proc = play_audio_clip_async(
                                     audio_path,
                                     start=t_play.start,
                                     duration=clip_dur,

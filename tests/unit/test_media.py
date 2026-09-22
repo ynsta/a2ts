@@ -9,7 +9,9 @@ from a2ts.media import (
     compute_file_hash,
     extract_audio_to_wav,
     play_audio_clip,
+    play_audio_clip_async,
     probe_media,
+    stop_audio_playback,
 )
 
 
@@ -156,3 +158,47 @@ def test_play_audio_clip_with_padding(mock_run: MagicMock, tmp_path: Path) -> No
     cmd = mock_run.call_args[0][0]
     assert "-ss" in cmd and "8.00" in cmd
     assert "-t" in cmd and "7.00" in cmd
+
+
+def test_play_audio_clip_async_nonexistent_file(tmp_path: Path) -> None:
+    non_existent = tmp_path / "missing.wav"
+    assert play_audio_clip_async(non_existent, start=0.0, duration=2.0) is None
+
+
+@patch("subprocess.Popen")
+def test_play_audio_clip_async_success(mock_popen: MagicMock, tmp_path: Path) -> None:
+    audio_file = tmp_path / "test.wav"
+    audio_file.write_bytes(b"dummy wav data")
+    dummy_proc = MagicMock()
+    mock_popen.return_value = dummy_proc
+
+    proc = play_audio_clip_async(
+        audio_file, start=10.0, duration=3.0, pad_before=2.0, pad_after=2.0
+    )
+    assert proc == dummy_proc
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "ffplay"
+    assert "-nodisp" in cmd
+    assert "-autoexit" in cmd
+    assert "-ss" in cmd and "8.00" in cmd
+    assert "-t" in cmd and "7.00" in cmd
+
+
+def test_stop_audio_playback_running() -> None:
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = None  # Still running
+    stop_audio_playback(mock_proc)
+    mock_proc.terminate.assert_called_once()
+    mock_proc.wait.assert_called_once_with(timeout=0.5)
+
+
+def test_stop_audio_playback_already_finished() -> None:
+    mock_proc = MagicMock()
+    mock_proc.poll.return_value = 0  # Finished
+    stop_audio_playback(mock_proc)
+    mock_proc.terminate.assert_not_called()
+
+
+def test_stop_audio_playback_none() -> None:
+    stop_audio_playback(None)  # Should not raise

@@ -206,12 +206,15 @@ def test_run_interactive_review_direct_free_text_entry() -> None:
         assert mock_ask.call_count == 1
 
 
-@patch("a2ts.speaker_review.play_audio_clip")
+@patch("a2ts.speaker_review.stop_audio_playback")
+@patch("a2ts.speaker_review.play_audio_clip_async")
 def test_run_interactive_review_autoplay_audio(
-    mock_play: MagicMock, tmp_path: Path
+    mock_play: MagicMock, mock_stop: MagicMock, tmp_path: Path
 ) -> None:
     audio_file = tmp_path / "audio.wav"
     audio_file.touch()
+    dummy_proc = MagicMock()
+    mock_play.return_value = dummy_proc
     turns = [
         AlignedTurn(
             turn_id=0,
@@ -232,14 +235,18 @@ def test_run_interactive_review_autoplay_audio(
         mock_play.assert_called_once_with(
             audio_file, start=2.0, duration=4.0, pad_before=2.0, pad_after=2.0
         )
+        mock_stop.assert_called_with(dummy_proc)
 
 
-@patch("a2ts.speaker_review.play_audio_clip")
+@patch("a2ts.speaker_review.stop_audio_playback")
+@patch("a2ts.speaker_review.play_audio_clip_async")
 def test_run_interactive_review_manual_play_and_replay(
-    mock_play: MagicMock, tmp_path: Path
+    mock_play: MagicMock, mock_stop: MagicMock, tmp_path: Path
 ) -> None:
     audio_file = tmp_path / "audio.wav"
     audio_file.touch()
+    dummy_proc = MagicMock()
+    mock_play.return_value = dummy_proc
     turns = [
         AlignedTurn(
             turn_id=0,
@@ -274,14 +281,18 @@ def test_run_interactive_review_manual_play_and_replay(
         # Second call was for sample 1 (start=1.0, duration=2.0)
         assert mock_play.call_args_list[1][1]["start"] == 1.0
         assert mock_play.call_args_list[1][1]["pad_before"] == 2.0
+        assert mock_stop.call_count >= 2
 
 
-@patch("a2ts.speaker_review.play_audio_clip")
+@patch("a2ts.speaker_review.stop_audio_playback")
+@patch("a2ts.speaker_review.play_audio_clip_async")
 def test_run_interactive_review_wide_playback(
-    mock_play: MagicMock, tmp_path: Path
+    mock_play: MagicMock, mock_stop: MagicMock, tmp_path: Path
 ) -> None:
     audio_file = tmp_path / "audio.wav"
     audio_file.touch()
+    dummy_proc = MagicMock()
+    mock_play.return_value = dummy_proc
     turns = [
         AlignedTurn(
             turn_id=0,
@@ -304,14 +315,18 @@ def test_run_interactive_review_wide_playback(
         mock_play.assert_called_once_with(
             audio_file, start=10.0, duration=2.0, pad_before=5.0, pad_after=5.0
         )
+        mock_stop.assert_called_with(dummy_proc)
 
 
-@patch("a2ts.speaker_review.play_audio_clip")
+@patch("a2ts.speaker_review.stop_audio_playback")
+@patch("a2ts.speaker_review.play_audio_clip_async")
 def test_run_interactive_review_time_slice_audio(
-    mock_play: MagicMock, tmp_path: Path
+    mock_play: MagicMock, mock_stop: MagicMock, tmp_path: Path
 ) -> None:
     audio_file = tmp_path / "audio.wav"
     audio_file.touch()
+    dummy_proc = MagicMock()
+    mock_play.return_value = dummy_proc
     turns = [
         AlignedTurn(
             turn_id=0,
@@ -335,3 +350,4 @@ def test_run_interactive_review_time_slice_audio(
         mock_play.assert_called_once_with(
             audio_file, start=10.0, duration=3.0, pad_before=2.0, pad_after=2.0
         )
+        mock_stop.assert_called_with(dummy_proc)
