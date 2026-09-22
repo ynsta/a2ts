@@ -378,3 +378,209 @@ def test_split_command_missing_turns(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "Turns cache not found" in result.output
+
+
+def test_run_with_cluster_threshold_and_voice_profiles(tmp_path: Path) -> None:
+    """Test run passes clustering options and invokes voice profile enrollment."""
+    media_file = tmp_path / "session.mp3"
+    media_file.touch()
+    profiles_path = tmp_path / "voice_profiles.json"
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="abc1234"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.diarize_segments") as mock_diarize,
+        patch("a2ts.cli.load_voice_profiles", return_value=None),
+        patch(
+            "a2ts.cli.run_interactive_review",
+            return_value=SpeakersMapping(cluster_defaults={"SPEAKER_00": "Brakk"}),
+        ),
+        patch("a2ts.cli.compute_voice_profiles") as mock_compute_vp,
+        patch("a2ts.cli.save_voice_profiles") as mock_save_vp,
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Hello Brakk", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+        mock_diarize.return_value = [
+            SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+        ]
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--cache-dir",
+                str(tmp_path / ".a2ts"),
+                "--cluster-threshold",
+                "0.65",
+                "--num-speakers",
+                "4",
+                "--voice-profiles",
+                str(profiles_path),
+                "--no-refine",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify diarize_segments called with threshold and num_speakers
+        mock_diarize.assert_called_once()
+        kwargs = mock_diarize.call_args.kwargs
+        assert kwargs["distance_threshold"] == 0.65
+        assert kwargs["num_speakers"] == 4
+
+        # Verify voice profile computation was invoked and saved
+        mock_compute_vp.assert_called_once()
+        mock_save_vp.assert_called_once()
+
+
+def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
+    """Test run pre-matches clusters when voice profiles database and cached embeddings exist."""
+    import numpy as np
+
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    media_file = tmp_path / "session.mp3"
+    media_file.touch()
+    cache_dir = tmp_path / ".a2ts"
+    diar_dir = cache_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+
+    centroid = [0.0] * 192
+    centroid[0] = 1.0
+    profiles_db = VoiceProfilesDatabase(
+        speakers={
+            "Brakk": VoiceProfile(
+                speaker_name="Brakk", centroid=centroid, sample_count=5
+            )
+        }
+    )
+    profiles_path = tmp_path / "voice_profiles.json"
+    profiles_path.write_text(profiles_db.model_dump_json(), encoding="utf-8")
+
+    emb = np.zeros((1, 192), dtype=np.float32)
+    emb[0, 0] = 1.0
+    np.save(diar_dir / "abc1234_embeddings.npy", emb)
+    (diar_dir / "abc1234_indices.json").write_text("[0]", encoding="utf-8")
+
+    captured_mapping: list[SpeakersMapping] = []
+
+    def capture_review(
+        turns: list[AlignedTurn],
+        candidates: list[str],
+        existing_mapping: SpeakersMapping | None = None,
+        **kwargs: object,
+    ) -> SpeakersMapping:
+        if existing_mapping is not None:
+            captured_mapping.append(existing_mapping.model_copy())
+        return existing_mapping or SpeakersMapping()
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="abc1234"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.diarize_segments") as mock_diarize,
+        patch("a2ts.cli.run_interactive_review", side_effect=capture_review),
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Brakk speaking", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+        mock_diarize.return_value = [
+            SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+        ]
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(profiles_path),
+                "--no-refine",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert len(captured_mapping) == 1
+        assert captured_mapping[0].cluster_defaults.get("SPEAKER_00") == "Brakk"
+
+
+def test_review_with_voice_profiles(tmp_path: Path) -> None:
+    """Test review command updates voice profiles when cached embeddings exist."""
+    import numpy as np
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+    out_file = tmp_path / "reviewed.md"
+    profiles_path = tmp_path / "voice_profiles.json"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello world.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
+    )
+
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "hash5678",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-09-21T00:00:00Z",
+        "output_path": "transcript.md",
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+
+    emb = np.zeros((1, 192), dtype=np.float32)
+    emb[0, 0] = 1.0
+    np.save(diar_dir / "hash5678_embeddings.npy", emb)
+    (diar_dir / "hash5678_indices.json").write_text("[0]", encoding="utf-8")
+
+    with (
+        patch(
+            "a2ts.cli.run_interactive_review",
+            return_value=SpeakersMapping(cluster_defaults={"SPEAKER_00": "Brakk"}),
+        ),
+        patch("a2ts.cli.compute_voice_profiles") as mock_compute_vp,
+        patch("a2ts.cli.save_voice_profiles") as mock_save_vp,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--output",
+                str(out_file),
+                "--voice-profiles",
+                str(profiles_path),
+            ],
+        )
+        assert result.exit_code == 0
+        mock_compute_vp.assert_called_once()
+        mock_save_vp.assert_called_once()
