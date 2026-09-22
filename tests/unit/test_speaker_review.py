@@ -351,3 +351,170 @@ def test_run_interactive_review_time_slice_audio(
             audio_file, start=10.0, duration=3.0, pad_before=2.0, pad_after=2.0
         )
         mock_stop.assert_called_with(dummy_proc)
+
+
+def test_run_interactive_review_quit_early() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 0",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=2.0,
+            end=4.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Turn 1",
+        ),
+        AlignedTurn(
+            turn_id=2,
+            start=4.0,
+            end=6.0,
+            speaker="SPEAKER_02",
+            cluster_id="SPEAKER_02",
+            text="Turn 2",
+        ),
+    ]
+    candidates = ["Alice", "Bob", "Charlie"]
+    # User assigns Alice to SPEAKER_00, then types 'q' on SPEAKER_01
+    prompt_inputs = ["1", "q"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(turns, candidates)
+        assert mapping.cluster_defaults == {"SPEAKER_00": "Alice"}
+        # Stopped immediately on 'q', never asked for SPEAKER_02
+        assert mock_ask.call_count == 2
+
+
+def test_run_interactive_review_filter_clusters() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 0",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=2.0,
+            end=4.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Turn 1",
+        ),
+    ]
+    candidates = ["Alice", "Bob"]
+    prompt_inputs = ["2"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(
+            turns, candidates, filter_clusters=["SPEAKER_01"]
+        )
+        assert mapping.cluster_defaults == {"SPEAKER_01": "Bob"}
+        assert mock_ask.call_count == 1
+
+
+def test_run_interactive_review_unassigned_only() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 0",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=2.0,
+            end=4.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Turn 1",
+        ),
+    ]
+    candidates = ["Alice", "Bob"]
+    existing = SpeakersMapping(cluster_defaults={"SPEAKER_00": "Alice"})
+    prompt_inputs = ["2"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(
+            turns, candidates, existing_mapping=existing, unassigned_only=True
+        )
+        assert mapping.cluster_defaults == {"SPEAKER_00": "Alice", "SPEAKER_01": "Bob"}
+        # Only prompted for unassigned SPEAKER_01
+        assert mock_ask.call_count == 1
+
+
+def test_run_interactive_review_min_turns_and_min_duration() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=10.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 0",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=10.0,
+            end=20.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 1",
+        ),
+        AlignedTurn(
+            turn_id=2,
+            start=20.0,
+            end=21.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Noise",
+        ),
+    ]
+    candidates = ["Alice", "Bob"]
+    prompt_inputs = ["1"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        # min_turns=2 skips SPEAKER_01 which has only 1 turn
+        mapping = run_interactive_review(turns, candidates, min_turns=2)
+        assert mapping.cluster_defaults == {"SPEAKER_00": "Alice"}
+        assert mock_ask.call_count == 1
+
+
+def test_run_interactive_review_filter_slice() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 0",
+            time_slice_id=0,
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=2.0,
+            end=4.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Turn 1",
+            time_slice_id=1,
+        ),
+    ]
+    candidates = ["Alice", "Bob"]
+    prompt_inputs = ["2"]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs) as mock_ask:
+        mapping = run_interactive_review(turns, candidates, filter_slice=1)
+        assert mapping.cluster_defaults == {"SPEAKER_01": "Bob"}
+        assert mock_ask.call_count == 1

@@ -162,6 +162,42 @@ def run(
         float,
         typer.Option(help="Context audio padding in seconds before/after sample quote"),
     ] = 2.0,
+    review_cluster: Annotated[
+        str | None,
+        typer.Option(
+            "--cluster",
+            "-c",
+            help="Filter specific cluster ID(s) to review (e.g. 'SPEAKER_00,SPEAKER_01')",
+        ),
+    ] = None,
+    review_unassigned_only: Annotated[
+        bool,
+        typer.Option(
+            "--unassigned-only",
+            help="Only review clusters that have not yet been attributed to a known speaker",
+        ),
+    ] = False,
+    review_min_turns: Annotated[
+        int,
+        typer.Option(
+            "--min-turns",
+            help="Minimum number of turns required to review a cluster",
+        ),
+    ] = 1,
+    review_min_duration: Annotated[
+        float,
+        typer.Option(
+            "--min-duration",
+            help="Minimum speech duration in seconds required to review a cluster",
+        ),
+    ] = 0.0,
+    review_time_slice: Annotated[
+        int | None,
+        typer.Option(
+            "--time-slice",
+            help="Only review clusters within specific time slice ID",
+        ),
+    ] = None,
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
@@ -336,6 +372,12 @@ def run(
                 + [e.name for e in entities]
             )
         )
+        filter_clusters: list[str] | None = None
+        if review_cluster:
+            filter_clusters = [
+                c.strip() for c in review_cluster.split(",") if c.strip()
+            ]
+
         mapping = run_interactive_review(
             aligned_turns,
             candidate_names,
@@ -343,6 +385,11 @@ def run(
             audio_path=audio_path,
             auto_play=auto_play,
             audio_padding=audio_padding,
+            filter_clusters=filter_clusters,
+            unassigned_only=review_unassigned_only,
+            min_turns=review_min_turns,
+            min_duration=review_min_duration,
+            filter_slice=review_time_slice,
         )
 
     save_speakers_mapping(mapping, mapping_path)
@@ -462,6 +509,42 @@ def review(
         float,
         typer.Option(help="Context audio padding in seconds before/after sample quote"),
     ] = 2.0,
+    cluster: Annotated[
+        str | None,
+        typer.Option(
+            "--cluster",
+            "-c",
+            help="Filter specific cluster ID(s) to review (e.g. 'SPEAKER_00,SPEAKER_01')",
+        ),
+    ] = None,
+    unassigned_only: Annotated[
+        bool,
+        typer.Option(
+            "--unassigned-only",
+            help="Only review clusters that have not yet been attributed to a known speaker",
+        ),
+    ] = False,
+    min_turns: Annotated[
+        int,
+        typer.Option(
+            "--min-turns",
+            help="Minimum number of turns required to review a cluster",
+        ),
+    ] = 1,
+    min_duration: Annotated[
+        float,
+        typer.Option(
+            "--min-duration",
+            help="Minimum speech duration in seconds required to review a cluster",
+        ),
+    ] = 0.0,
+    time_slice: Annotated[
+        int | None,
+        typer.Option(
+            "--time-slice",
+            help="Only review clusters within specific time slice ID",
+        ),
+    ] = None,
 ) -> None:
     """Re-run interactive speaker review on cached session turns."""
     turns_path = session_dir / "turns.json"
@@ -509,6 +592,10 @@ def review(
         candidate_names.extend(e.name for e in scan_context_directory(context_dir))
     candidate_names = list(dict.fromkeys(candidate_names))
 
+    filter_clusters: list[str] | None = None
+    if cluster:
+        filter_clusters = [c.strip() for c in cluster.split(",") if c.strip()]
+
     mapping = run_interactive_review(
         turns,
         candidate_names,
@@ -516,6 +603,11 @@ def review(
         audio_path=audio_path,
         auto_play=auto_play,
         audio_padding=audio_padding,
+        filter_clusters=filter_clusters,
+        unassigned_only=unassigned_only,
+        min_turns=min_turns,
+        min_duration=min_duration,
+        filter_slice=time_slice,
     )
     save_speakers_mapping(mapping, mapping_path)
 

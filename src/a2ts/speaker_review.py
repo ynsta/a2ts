@@ -88,6 +88,11 @@ def run_interactive_review(
     audio_path: Path | None = None,
     auto_play: bool = True,
     audio_padding: float = 2.0,
+    filter_clusters: list[str] | None = None,
+    unassigned_only: bool = False,
+    min_turns: int = 1,
+    min_duration: float = 0.0,
+    filter_slice: int | None = None,
 ) -> SpeakersMapping:
     """Run interactive terminal QCM to attribute speakers."""
     candidates = list(dict.fromkeys(candidates))
@@ -96,12 +101,28 @@ def run_interactive_review(
         if existing_mapping is not None
         else SpeakersMapping()
     )
-    stats = collect_speaker_stats(turns)
+    turns_to_review = (
+        [t for t in turns if t.time_slice_id == filter_slice]
+        if filter_slice is not None
+        else turns
+    )
+    stats = collect_speaker_stats(turns_to_review)
 
     console.print(
         "\n[bold cyan]=== Interactive Speaker Attribution Review ===[/bold cyan]\n"
     )
     for cid, data in stats.items():
+        if filter_clusters and cid not in filter_clusters:
+            continue
+        if unassigned_only:
+            curr_assigned = mapping.cluster_defaults.get(cid)
+            if curr_assigned and not curr_assigned.startswith("SPEAKER_"):
+                continue
+        if data["turn_count"] < min_turns:
+            continue
+        if data["total_duration"] < min_duration:
+            continue
+
         console.print(
             f"[bold yellow]Speaker Cluster: {cid}[/bold yellow] ({data['turn_count']} turns, ~{data['total_duration']:.1f}s)"
         )
@@ -133,6 +154,7 @@ def run_interactive_review(
         console.print(f"  [s] {skip_label}")
         console.print("  [t] Review this cluster by time slices (temporal split)")
         console.print("  [c] Type custom name (or type speaker name directly)")
+        console.print("  [q] Quit review and save progress")
 
         active_proc: subprocess.Popen[bytes] | None = None
         if auto_play and audio_path and sample_turns:
@@ -152,12 +174,15 @@ def run_interactive_review(
 
         while True:
             raw_choice = Prompt.ask(
-                "Attribution choice (number, custom name, [p]lay, [w]ide, [s]kip, or [t]ime-slice)",
+                "Attribution choice (number, custom name, [p]lay, [w]ide, [s]kip, [t]ime-slice, or [q]uit)",
                 default="s",
             ).strip()
             stop_audio_playback(active_proc)
 
             choice_lower = raw_choice.lower()
+            if choice_lower in ("q", "quit", "exit"):
+                console.print("[dim]Exited review early. Saving progress...[/dim]\n")
+                return mapping
             is_wide = choice_lower in (
                 "w",
                 "wide",
@@ -286,12 +311,15 @@ def run_interactive_review(
 
                     while True:
                         slice_choice = Prompt.ask(
-                            f"Attribution for Slice {slice_id} (number, custom name, [p]lay, [w]ide, or [s]kip)",
+                            f"Attribution for Slice {slice_id} (number, custom name, [p]lay, [w]ide, [s]kip, or [q]uit)",
                             default="s",
                         ).strip()
                         stop_audio_playback(slice_proc)
 
                         s_lower = slice_choice.lower()
+                        if s_lower in ("q", "quit", "exit"):
+                            console.print("[dim]Exited slice review.[/dim]\n")
+                            break
                         s_is_wide = s_lower in (
                             "w",
                             "wide",

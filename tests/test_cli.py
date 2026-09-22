@@ -717,3 +717,54 @@ def test_recluster_command_missing_embeddings(tmp_path: Path) -> None:
     result = runner.invoke(app, ["recluster", str(session_dir)])
     assert result.exit_code == 1
     assert "Embeddings cache not found" in result.output
+
+
+def test_review_with_filter_options(tmp_path: Path) -> None:
+    """Test review command passes filter options to run_interactive_review."""
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    out_file = tmp_path / "filtered_review.md"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello world.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+
+    with patch(
+        "a2ts.cli.run_interactive_review", return_value=SpeakersMapping()
+    ) as mock_review:
+        result = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--output",
+                str(out_file),
+                "--cluster",
+                "SPEAKER_00,SPEAKER_02",
+                "--unassigned-only",
+                "--min-turns",
+                "3",
+                "--min-duration",
+                "10.0",
+                "--time-slice",
+                "1",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_review.assert_called_once()
+        kwargs = mock_review.call_args.kwargs
+        assert kwargs["filter_clusters"] == ["SPEAKER_00", "SPEAKER_02"]
+        assert kwargs["unassigned_only"] is True
+        assert kwargs["min_turns"] == 3
+        assert kwargs["min_duration"] == 10.0
+        assert kwargs["filter_slice"] == 1
