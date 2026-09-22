@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -9,6 +10,7 @@ from typing import Annotated, Any
 import numpy as np
 import typer
 from rich.console import Console
+from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
 from a2ts.diarizer import (
@@ -642,6 +644,197 @@ def split(
     out_path.write_text(raw_md, encoding="utf-8")
     console.print(
         f"\n[bold green]✓ Cluster '{cluster_id}' split at {at}s to '{to}'. Transcript saved to:[/bold green] {out_path}\n"
+    )
+
+
+@app.command()
+def recluster(
+    session_dir: Annotated[
+        Path, typer.Argument(help="Path to session cache directory (.a2ts)")
+    ] = Path(".a2ts"),
+    cluster_threshold: Annotated[
+        float,
+        typer.Option(
+            help="Diarization cosine distance threshold (higher = merges more)"
+        ),
+    ] = 0.60,
+    num_speakers: Annotated[
+        int | None,
+        typer.Option(help="Target speaker count for clustering"),
+    ] = None,
+    slice_minutes: Annotated[
+        float | None,
+        typer.Option(help="Time slice window size in minutes"),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Output markdown transcript path"),
+    ] = None,
+) -> None:
+    """Re-cluster cached speaker embeddings and regenerate transcript."""
+    session_path = session_dir / "session.json"
+    if not session_path.is_file():
+        console.print(
+            f"[bold red]Session metadata not found at {session_path}[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        session_meta = SessionMetadata.model_validate_json(
+            session_path.read_text(encoding="utf-8")
+        )
+    except (ValueError, KeyError, OSError) as exc:
+        console.print(f"[bold red]Failed to parse session metadata: {exc}[/bold red]")
+        raise typer.Exit(code=1)
+
+    media_hash = session_meta.media_hash
+    engine = session_meta.engine
+
+    transcripts_cache = session_dir / "transcripts" / f"{media_hash}_{engine}.json"
+    if not transcripts_cache.is_file():
+        candidates = list((session_dir / "transcripts").glob(f"{media_hash}_*.json"))
+        if candidates:
+            transcripts_cache = candidates[0]
+        else:
+            console.print(
+                f"[bold red]Transcripts cache not found at {transcripts_cache}[/bold red]"
+            )
+            raise typer.Exit(code=1)
+
+    try:
+        raw_segments = [
+            RawSegment.model_validate(seg)
+            for seg in json.loads(transcripts_cache.read_text(encoding="utf-8"))
+        ]
+    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+        console.print(f"[bold red]Failed to load raw segments: {exc}[/bold red]")
+        raise typer.Exit(code=1)
+
+    diarization_dir = session_dir / "diarization"
+    embeddings_npy = diarization_dir / f"{media_hash}_embeddings.npy"
+    indices_json = diarization_dir / f"{media_hash}_indices.json"
+
+    if not (embeddings_npy.is_file() and indices_json.is_file()):
+        found = False
+        if diarization_dir.is_dir():
+            for e_file in diarization_dir.glob("*_embeddings.npy"):
+                prefix = e_file.name.removesuffix("_embeddings.npy")
+                i_file = diarization_dir / f"{prefix}_indices.json"
+                if i_file.is_file():
+                    embeddings_npy = e_file
+                    indices_json = i_file
+                    found = True
+                    break
+        if not found:
+            console.print(
+                f"[bold red]Embeddings cache not found at {embeddings_npy}[/bold red]"
+            )
+            raise typer.Exit(code=1)
+
+    try:
+        emb_matrix = np.load(embeddings_npy)
+        valid_indices = [
+            int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
+        ]
+    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
+        console.print(f"[bold red]Failed to load embeddings: {exc}[/bold red]")
+        raise typer.Exit(code=1)
+
+    t_start = time.perf_counter()
+
+    if len(valid_indices) == 0:
+        labels = np.zeros(0, dtype=int)
+    elif len(valid_indices) == 1:
+        labels = np.zeros(1, dtype=int)
+    elif num_speakers is not None:
+        actual_clusters = min(num_speakers, len(valid_indices))
+        clusterer = AgglomerativeClustering(
+            n_clusters=actual_clusters,
+            metric="cosine",
+            linkage="average",
+        )
+        labels = clusterer.fit_predict(emb_matrix)
+    else:
+        clusterer = AgglomerativeClustering(
+            n_clusters=None,
+            distance_threshold=cluster_threshold,
+            metric="cosine",
+            linkage="average",
+        )
+        labels = clusterer.fit_predict(emb_matrix)
+
+    full_labels = [0] * len(raw_segments)
+    for valid_idx, label in zip(valid_indices, labels, strict=False):
+        full_labels[valid_idx] = int(label)
+
+    for i in range(len(raw_segments)):
+        if i not in valid_indices:
+            if i > 0:
+                full_labels[i] = full_labels[i - 1]
+            elif valid_indices:
+                full_labels[i] = full_labels[valid_indices[0]]
+
+    label_map: dict[int, str] = {}
+    speaker_turns: list[SpeakerTurn] = []
+    for i, seg in enumerate(raw_segments):
+        lbl = full_labels[i]
+        if lbl not in label_map:
+            label_map[lbl] = f"SPEAKER_{len(label_map):02d}"
+        cluster_id = label_map[lbl]
+        speaker_turns.append(
+            SpeakerTurn(
+                id=i,
+                start=seg.start,
+                end=seg.end,
+                cluster_id=cluster_id,
+            )
+        )
+
+    num_detected = len(label_map) if label_map else (1 if raw_segments else 0)
+    elapsed = time.perf_counter() - t_start
+    elapsed_str = f"{elapsed:.2f}s" if elapsed >= 0.1 else "< 0.1s"
+
+    resolved_slice = (
+        slice_minutes
+        if slice_minutes is not None
+        else (session_meta.time_slice_minutes or 15.0)
+    )
+    sliced_turns = assign_time_slices(speaker_turns, slice_minutes=resolved_slice)
+    aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
+
+    turns_path = session_dir / "turns.json"
+    turns_path.write_text(
+        json.dumps(
+            [t.model_dump() for t in aligned_turns], indent=2, ensure_ascii=False
+        ),
+        encoding="utf-8",
+    )
+
+    diar_cache = diarization_dir / f"{media_hash}.json"
+    diar_cache.write_text(
+        json.dumps([t.model_dump() for t in speaker_turns], indent=2),
+        encoding="utf-8",
+    )
+
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+    mapped_turns = apply_speakers_mapping(aligned_turns, mapping)
+
+    debounced_turns = debounce_consecutive_turns(mapped_turns)
+    raw_md = render_markdown_transcript(debounced_turns)
+
+    out_path = output
+    if out_path is None:
+        if session_meta.output_path:
+            out_path = Path(session_meta.output_path)
+        else:
+            out_path = Path("transcript.md")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(raw_md, encoding="utf-8")
+
+    console.print(
+        f"[bold green]✓ Re-clustered into {num_detected} speakers in {elapsed_str}. Saved to {out_path}.[/bold green]"
     )
 
 

@@ -33,6 +33,7 @@ def test_help_command() -> None:
     assert "extract-audio" in result.output
     assert "extract-vocab" in result.output
     assert "review" in result.output
+    assert "recluster" in result.output
     assert "split" in result.output
     assert "info" in result.output
 
@@ -584,3 +585,135 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
         assert result.exit_code == 0
         mock_compute_vp.assert_called_once()
         mock_save_vp.assert_called_once()
+
+
+def test_recluster_command(tmp_path: Path) -> None:
+    """Test recluster command re-clusters cached embeddings and generates transcript."""
+    import numpy as np
+
+    from a2ts.models import RawSegment, SessionMetadata, SpeakersMapping
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+
+    # Create dummy cached session metadata
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash123",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "recluster_out.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    # Create dummy raw segments cache
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    raw_segs = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Turn 1", words=[]),
+        RawSegment(id=1, start=1.5, end=2.5, text="Turn 2", words=[]),
+    ]
+    (transcripts_dir / "hash123_whisper.json").write_text(
+        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+    )
+
+    # Create dummy embeddings cache
+    np.save(
+        diar_dir / "hash123_embeddings.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    (diar_dir / "hash123_indices.json").write_text("[0, 1]", encoding="utf-8")
+
+    # Create speakers mapping with custom name
+    mapping = SpeakersMapping(cluster_defaults={"SPEAKER_00": "Valeros"})
+    (session_dir / "speakers_mapping.json").write_text(
+        mapping.model_dump_json(), encoding="utf-8"
+    )
+
+    # Run recluster command
+    result = runner.invoke(
+        app,
+        [
+            "recluster",
+            str(session_dir),
+            "--cluster-threshold",
+            "0.70",
+            "--output",
+            str(tmp_path / "recluster_out.md"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (tmp_path / "recluster_out.md").is_file()
+    assert (session_dir / "turns.json").is_file()
+    content = (tmp_path / "recluster_out.md").read_text(encoding="utf-8")
+    assert "Valeros" in content
+    assert "✓ Re-clustered into" in result.output
+
+
+def test_recluster_command_missing_session(tmp_path: Path) -> None:
+    """Test recluster command exits with code 1 if session.json missing."""
+    result = runner.invoke(app, ["recluster", str(tmp_path / "empty_dir")])
+    assert result.exit_code == 1
+    assert "Session metadata not found" in result.output
+
+
+def test_recluster_command_missing_transcripts(tmp_path: Path) -> None:
+    """Test recluster command exits with code 1 if transcripts missing."""
+    from a2ts.models import SessionMetadata
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash999",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "out.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    result = runner.invoke(app, ["recluster", str(session_dir)])
+    assert result.exit_code == 1
+    assert "Transcripts cache not found" in result.output
+
+
+def test_recluster_command_missing_embeddings(tmp_path: Path) -> None:
+    """Test recluster command exits with code 1 if embeddings missing."""
+    from a2ts.models import RawSegment, SessionMetadata
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash999",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "out.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    raw_segs = [RawSegment(id=0, start=0.0, end=1.0, text="Turn 1", words=[])]
+    (transcripts_dir / "hash999_whisper.json").write_text(
+        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["recluster", str(session_dir)])
+    assert result.exit_code == 1
+    assert "Embeddings cache not found" in result.output
