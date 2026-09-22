@@ -1,5 +1,7 @@
 """Core data models for a2ts."""
 
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -76,3 +78,19 @@ class SessionMetadata(BaseModel):
     time_slice_minutes: float
     created_at: str
     output_path: str = ""
+
+
+class VoiceProfile(BaseModel):
+    """Voice signature for an enrolled speaker."""
+
+    speaker_name: str
+    centroid: list[float]
+    sample_count: int = 1
+
+
+class VoiceProfilesDatabase(BaseModel):
+    """Database of enrolled speaker voice profiles."""
+
+    version: int = 1
+    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    speakers: dict[str, VoiceProfile] = Field(default_factory=dict)

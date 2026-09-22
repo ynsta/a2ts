@@ -111,3 +111,25 @@ def test_session_metadata() -> None:
     assert meta.prompt_hash == "prome987"
     assert meta.time_slice_minutes == 15.0
     assert meta.created_at == "2026-09-21T11:00:00Z"
+
+
+def test_voice_profile_and_database() -> None:
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    vp = VoiceProfile(
+        speaker_name="Brakk",
+        centroid=[0.1, 0.2, -0.3],
+        sample_count=5,
+    )
+    assert vp.speaker_name == "Brakk"
+    assert len(vp.centroid) == 3
+    assert vp.sample_count == 5
+
+    db = VoiceProfilesDatabase(
+        speakers={"Brakk": vp},
+        version=1,
+    )
+    assert "Brakk" in db.speakers
+    assert db.speakers["Brakk"].sample_count == 5
+    dumped = db.model_dump()
+    assert dumped["speakers"]["Brakk"]["speaker_name"] == "Brakk"
