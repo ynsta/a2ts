@@ -344,8 +344,8 @@ def run(
             auto_play=auto_play,
             audio_padding=audio_padding,
         )
-        save_speakers_mapping(mapping, mapping_path)
 
+    save_speakers_mapping(mapping, mapping_path)
     aligned_turns = apply_speakers_mapping(aligned_turns, mapping)
 
     # Auto-enroll / update voice profiles
