@@ -167,3 +167,126 @@ def test_diarize_segments_with_num_speakers(tmp_path: Path) -> None:
         # segments 0 and 1 should cluster together
         assert turns[0].cluster_id == turns[1].cluster_id
         assert turns[2].cluster_id != turns[0].cluster_id
+
+
+def test_voice_profiles_computation_and_matching(tmp_path: Path) -> None:
+    from a2ts.diarizer import (
+        compute_voice_profiles,
+        load_voice_profiles,
+        match_embeddings_to_profiles,
+        save_voice_profiles,
+    )
+    from a2ts.models import SpeakersMapping, SpeakerTurn
+
+    # Two 2D unit vectors
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.8, 0.6],
+            [0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    valid_indices = [0, 1, 2]
+
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=1.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=1.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=2, start=2.0, end=3.0, cluster_id="SPEAKER_01"),
+    ]
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Brakk", "SPEAKER_01": "Merrow"}
+    )
+
+    db = compute_voice_profiles(embeddings, valid_indices, turns, mapping)
+    assert "Brakk" in db.speakers
+    assert "Merrow" in db.speakers
+    assert db.speakers["Brakk"].sample_count == 2
+    assert db.speakers["Merrow"].sample_count == 1
+
+    # Check centroid normalization
+    brakk_centroid = np.array(db.speakers["Brakk"].centroid)
+    assert np.isclose(np.linalg.norm(brakk_centroid), 1.0)
+
+    # Save and reload
+    db_path = tmp_path / "voice_profiles.json"
+    save_voice_profiles(db, db_path)
+    loaded = load_voice_profiles(db_path)
+    assert loaded is not None
+    assert "Brakk" in loaded.speakers
+
+    # Test matching
+    test_embs = np.array(
+        [
+            [0.99, 0.05],  # Very close to Brakk
+            [0.02, 0.99],  # Very close to Merrow
+            [-1.0, 0.0],  # Opposite / unknown
+        ],
+        dtype=np.float32,
+    )
+    matches = match_embeddings_to_profiles(test_embs, loaded, similarity_threshold=0.60)
+    assert matches[0][0] == "Brakk"
+    assert matches[1][0] == "Merrow"
+    assert 2 not in matches  # Did not match
+
+
+def test_voice_profiles_combines_existing_db() -> None:
+    from a2ts.diarizer import compute_voice_profiles
+    from a2ts.models import SpeakerTurn, VoiceProfile, VoiceProfilesDatabase
+
+    existing_db = VoiceProfilesDatabase(
+        speakers={
+            "Brakk": VoiceProfile(
+                speaker_name="Brakk",
+                centroid=[1.0, 0.0],
+                sample_count=2,
+            ),
+            "Alice": VoiceProfile(
+                speaker_name="Alice",
+                centroid=[0.0, 1.0],
+                sample_count=5,
+            ),
+        }
+    )
+
+    embeddings = np.array([[0.0, 1.0]], dtype=np.float32)
+    valid_indices = [0]
+    turns = [SpeakerTurn(id=0, start=0.0, end=1.0, cluster_id="SPEAKER_00")]
+    mapping = {"SPEAKER_00": "Brakk"}
+
+    db = compute_voice_profiles(
+        embeddings, valid_indices, turns, mapping, existing_db=existing_db
+    )
+    # Alice untouched
+    assert "Alice" in db.speakers
+    assert db.speakers["Alice"].sample_count == 5
+
+    # Brakk updated: 2*[1, 0] + 1*[0, 1] = [2, 1], normalized = [2/sqrt(5), 1/sqrt(5)]
+    assert "Brakk" in db.speakers
+    assert db.speakers["Brakk"].sample_count == 3
+    expected_centroid = np.array([2.0, 1.0]) / np.linalg.norm([2.0, 1.0])
+    assert np.allclose(db.speakers["Brakk"].centroid, expected_centroid)
+
+
+def test_voice_profiles_ignores_unmapped_generic_speakers() -> None:
+    from a2ts.diarizer import compute_voice_profiles
+    from a2ts.models import SpeakerTurn
+
+    embeddings = np.array([[1.0, 0.0]], dtype=np.float32)
+    valid_indices = [0]
+    turns = [SpeakerTurn(id=0, start=0.0, end=1.0, cluster_id="SPEAKER_00")]
+    # No mapping for SPEAKER_00
+    db = compute_voice_profiles(embeddings, valid_indices, turns, {})
+    assert len(db.speakers) == 0
+
+
+def test_load_voice_profiles_invalid_or_missing(tmp_path: Path) -> None:
+    from a2ts.diarizer import load_voice_profiles
+
+    # Missing file
+    assert load_voice_profiles(tmp_path / "nonexistent.json") is None
+
+    # Invalid file
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("not json", encoding="utf-8")
+    assert load_voice_profiles(bad_file) is None

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import soundfile as sf  # type: ignore[import-untyped]
 import torch
+from pydantic import ValidationError
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -20,7 +21,14 @@ from rich.progress import (
 )
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
-from a2ts.models import RawSegment, SpeakerTurn
+from a2ts.models import (
+    AlignedTurn,
+    RawSegment,
+    SpeakersMapping,
+    SpeakerTurn,
+    VoiceProfile,
+    VoiceProfilesDatabase,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -261,3 +269,182 @@ def diarize_segments(
         )
 
     return speaker_turns
+
+
+def compute_voice_profiles(
+    embeddings: np.ndarray,
+    valid_indices: list[int],
+    turns: list[SpeakerTurn | AlignedTurn],
+    speakers_mapping: SpeakersMapping | dict[str, str],
+    existing_db: VoiceProfilesDatabase | None = None,
+) -> VoiceProfilesDatabase:
+    """Compute normalized centroid voice profiles from segment embeddings and labeled turns.
+
+    Ignores generic unmapped speaker IDs starting with 'SPEAKER_'.
+    If existing_db is provided, combines existing speaker centroids using sample-count weighted averaging.
+    """
+    profiles: dict[str, VoiceProfile] = {}
+    if existing_db is not None:
+        for spk, prof in existing_db.speakers.items():
+            profiles[spk] = prof.model_copy()
+
+    if len(embeddings) == 0 or len(valid_indices) == 0:
+        return VoiceProfilesDatabase(
+            version=existing_db.version if existing_db else 1,
+            speakers=profiles,
+        )
+
+    turn_by_id: dict[int, SpeakerTurn | AlignedTurn] = {}
+    for idx, turn in enumerate(turns):
+        tid = getattr(turn, "turn_id", getattr(turn, "id", idx))
+        turn_by_id[tid] = turn
+
+    speaker_embs: dict[str, list[np.ndarray]] = {}
+
+    for i, valid_idx in enumerate(valid_indices):
+        if i >= len(embeddings):
+            break
+        emb = embeddings[i]
+        matched_turn = turn_by_id.get(valid_idx)
+        if matched_turn is None and 0 <= valid_idx < len(turns):
+            matched_turn = turns[valid_idx]
+        if matched_turn is None:
+            continue
+
+        turn_id = (
+            matched_turn.turn_id
+            if isinstance(matched_turn, AlignedTurn)
+            else matched_turn.id
+        )
+        cluster_id = matched_turn.cluster_id
+        resolved_spk: str | None = None
+
+        if isinstance(speakers_mapping, SpeakersMapping):
+            if turn_id in speakers_mapping.turn_overrides:
+                resolved_spk = speakers_mapping.turn_overrides[turn_id]
+            elif cluster_id in speakers_mapping.cluster_defaults:
+                resolved_spk = speakers_mapping.cluster_defaults[cluster_id]
+            elif (
+                isinstance(matched_turn, SpeakerTurn) and matched_turn.resolved_speaker
+            ):
+                resolved_spk = matched_turn.resolved_speaker
+            elif isinstance(matched_turn, AlignedTurn) and matched_turn.speaker:
+                resolved_spk = matched_turn.speaker
+            else:
+                resolved_spk = cluster_id
+        elif isinstance(speakers_mapping, dict):
+            turn_key = str(turn_id)
+            if turn_key in speakers_mapping:
+                resolved_spk = speakers_mapping[turn_key]
+            elif cluster_id in speakers_mapping:
+                resolved_spk = speakers_mapping[cluster_id]
+            elif (
+                isinstance(matched_turn, SpeakerTurn) and matched_turn.resolved_speaker
+            ):
+                resolved_spk = matched_turn.resolved_speaker
+            elif isinstance(matched_turn, AlignedTurn) and matched_turn.speaker:
+                resolved_spk = matched_turn.speaker
+            else:
+                resolved_spk = cluster_id
+
+        if not resolved_spk or resolved_spk.startswith("SPEAKER_"):
+            continue
+
+        speaker_embs.setdefault(resolved_spk, []).append(emb)
+
+    for speaker, embs in speaker_embs.items():
+        new_arr = np.array(embs, dtype=np.float32)
+        n_new = len(embs)
+        mu_new = np.mean(new_arr, axis=0)
+
+        if speaker in profiles:
+            old_prof = profiles[speaker]
+            n_old = old_prof.sample_count
+            mu_old = np.array(old_prof.centroid, dtype=np.float32)
+            mu_comb = (n_old * mu_old + n_new * mu_new) / (n_old + n_new)
+            norm = float(np.linalg.norm(mu_comb))
+            if norm > 0:
+                mu_comb = mu_comb / norm
+            profiles[speaker] = VoiceProfile(
+                speaker_name=speaker,
+                centroid=[float(x) for x in mu_comb],
+                sample_count=n_old + n_new,
+            )
+        else:
+            norm = float(np.linalg.norm(mu_new))
+            if norm > 0:
+                mu_new = mu_new / norm
+            profiles[speaker] = VoiceProfile(
+                speaker_name=speaker,
+                centroid=[float(x) for x in mu_new],
+                sample_count=n_new,
+            )
+
+    return VoiceProfilesDatabase(
+        version=existing_db.version if existing_db else 1,
+        speakers=profiles,
+    )
+
+
+def save_voice_profiles(db: VoiceProfilesDatabase, path: Path) -> None:
+    """Save voice profiles database to JSON atomically."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(db.model_dump_json(indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_voice_profiles(path: Path) -> VoiceProfilesDatabase | None:
+    """Load voice profiles database from JSON, returning None if missing or invalid."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+        return VoiceProfilesDatabase.model_validate_json(content)
+    except (json.JSONDecodeError, OSError, ValueError, ValidationError) as exc:
+        logger.debug("Failed to load voice profiles from %s: %s", path, exc)
+        return None
+
+
+def match_embeddings_to_profiles(
+    embeddings: np.ndarray,
+    db: VoiceProfilesDatabase,
+    similarity_threshold: float = 0.60,
+) -> dict[int, tuple[str, float]]:
+    """Match embeddings against enrolled voice profiles using cosine similarity.
+
+    Returns mapping from embedding index to (speaker_name, similarity_score)
+    for all embeddings whose best match score >= similarity_threshold.
+    """
+    if len(embeddings) == 0 or not db.speakers:
+        return {}
+
+    speaker_names = list(db.speakers.keys())
+    centroids = np.array(
+        [db.speakers[name].centroid for name in speaker_names],
+        dtype=np.float32,
+    )
+
+    # Unit-normalize embeddings and centroids
+    emb_norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    emb_norms[emb_norms == 0] = 1.0
+    norm_embeddings = embeddings / emb_norms
+
+    c_norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+    c_norms[c_norms == 0] = 1.0
+    norm_centroids = centroids / c_norms
+
+    sim_matrix = np.dot(norm_embeddings, norm_centroids.T)
+
+    matches: dict[int, tuple[str, float]] = {}
+    best_indices = np.argmax(sim_matrix, axis=1)
+    best_scores = np.max(sim_matrix, axis=1)
+
+    for i, (k_star, score) in enumerate(zip(best_indices, best_scores, strict=False)):
+        score_val = float(score)
+        if score_val >= similarity_threshold:
+            matches[i] = (speaker_names[k_star], score_val)
+
+    return matches
