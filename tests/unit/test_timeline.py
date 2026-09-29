@@ -36,6 +36,36 @@ def test_split_cluster_at_time() -> None:
     assert updated[3].cluster_id == "SPEAKER_02"
 
 
+def test_align_words_omits_empty_turns_preserves_turn_id() -> None:
+    segments = [
+        RawSegment(
+            id=0,
+            start=0.0,
+            end=2.0,
+            text="Hello",
+            words=[WordTimestamp(word="Hello", start=0.5, end=1.5)],
+        ),
+        RawSegment(
+            id=1,
+            start=10.0,
+            end=12.0,
+            text="World",
+            words=[WordTimestamp(word="World", start=10.5, end=11.5)],
+        ),
+    ]
+    turns = [
+        SpeakerTurn(id=10, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=11, start=3.0, end=5.0, cluster_id="SPEAKER_01"),
+        SpeakerTurn(id=12, start=10.0, end=12.0, cluster_id="SPEAKER_02"),
+    ]
+    aligned = align_words_to_speaker_turns(segments, turns)
+    assert len(aligned) == 2
+    assert aligned[0].turn_id == 10
+    assert aligned[0].speaker == "SPEAKER_00"
+    assert aligned[1].turn_id == 12
+    assert aligned[1].speaker == "SPEAKER_02"
+
+
 def test_align_words_to_speaker_turns() -> None:
     segments = [
         RawSegment(

@@ -182,11 +182,19 @@ def extract_embeddings(
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speech segments."""
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file = (
+            Path(f"{cache_prefix}_segment_embeddings.npy")
+            if Path(f"{cache_prefix}_segment_embeddings.npy").is_file()
+            else Path(f"{cache_prefix}_embeddings.npy")
+        )
+        idx_file = (
+            Path(f"{cache_prefix}_segment_indices.json")
+            if Path(f"{cache_prefix}_segment_indices.json").is_file()
+            else Path(f"{cache_prefix}_indices.json")
+        )
         if emb_file.is_file() and idx_file.is_file():
             console.print(
-                f"[bold cyan]Loading cached embeddings from {cache_prefix}...[/bold cyan]"
+                f"[bold cyan]Loading cached embeddings from {emb_file}...[/bold cyan]"
             )
             try:
                 emb_matrix = np.load(emb_file)
@@ -195,7 +203,7 @@ def extract_embeddings(
                 ]
                 return emb_matrix, cached_indices
             except (OSError, ValueError, json.JSONDecodeError) as exc:
-                logger.debug("Failed to read embedding cache %s: %s", cache_prefix, exc)
+                logger.debug("Failed to read embedding cache %s: %s", emb_file, exc)
 
     if not segments:
         return np.empty((0, 0), dtype=np.float32), []
@@ -236,7 +244,8 @@ def extract_embeddings(
                 with torch.no_grad():
                     emb = classifier.encode_batch(clip_tensor).squeeze().cpu().numpy()
                 embeddings.append(emb)
-                valid_indices.append(idx)
+                seg_id = getattr(seg, "id", idx)
+                valid_indices.append(seg_id)
             progress.update(task, advance=1)
 
     if not embeddings:
@@ -249,31 +258,38 @@ def extract_embeddings(
     emb_matrix = emb_matrix / norms
 
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file = Path(f"{cache_prefix}_segment_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_segment_indices.json")
         emb_file.parent.mkdir(parents=True, exist_ok=True)
         np.save(emb_file, emb_matrix)
-        idx_file.write_text(
-            json.dumps(valid_indices, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
+        np.save(Path(f"{cache_prefix}_embeddings.npy"), emb_matrix)
+        atomic_write_text(Path(f"{cache_prefix}_indices.json"), json.dumps(valid_indices, indent=2))
 
     return emb_matrix, valid_indices
 
 
 def extract_embeddings_for_turns(
     audio_path: Path,
-    turns: list[SpeakerTurn],
+    turns: Sequence[SpeakerTurn | AlignedTurn],
     device: str = "cuda",
     cache_prefix: Path | None = None,
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speaker turns using ECAPA-TDNN."""
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file = (
+            Path(f"{cache_prefix}_turn_embeddings.npy")
+            if Path(f"{cache_prefix}_turn_embeddings.npy").is_file()
+            else Path(f"{cache_prefix}_embeddings.npy")
+        )
+        idx_file = (
+            Path(f"{cache_prefix}_turn_indices.json")
+            if Path(f"{cache_prefix}_turn_indices.json").is_file()
+            else Path(f"{cache_prefix}_indices.json")
+        )
         if emb_file.is_file() and idx_file.is_file():
             console.print(
-                f"[bold cyan]Loading cached turn embeddings from {cache_prefix}...[/bold cyan]"
+                f"[bold cyan]Loading cached turn embeddings from {emb_file}...[/bold cyan]"
             )
             try:
                 emb_matrix = np.load(emb_file)
@@ -283,7 +299,7 @@ def extract_embeddings_for_turns(
                 return emb_matrix, cached_indices
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 logger.debug(
-                    "Failed to read turn embedding cache %s: %s", cache_prefix, exc
+                    "Failed to read turn embedding cache %s: %s", emb_file, exc
                 )
 
     if not turns:
@@ -325,7 +341,8 @@ def extract_embeddings_for_turns(
                 with torch.no_grad():
                     emb = classifier.encode_batch(clip_tensor).squeeze().cpu().numpy()
                 embeddings.append(emb)
-                valid_indices.append(idx)
+                turn_id = getattr(turn, "turn_id", getattr(turn, "id", idx))
+                valid_indices.append(turn_id)
             progress.update(task, advance=1)
 
     if not embeddings:
@@ -337,14 +354,13 @@ def extract_embeddings_for_turns(
     emb_matrix = emb_matrix / norms
 
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file = Path(f"{cache_prefix}_turn_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_turn_indices.json")
         emb_file.parent.mkdir(parents=True, exist_ok=True)
         np.save(emb_file, emb_matrix)
-        idx_file.write_text(
-            json.dumps(valid_indices, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
+        np.save(Path(f"{cache_prefix}_embeddings.npy"), emb_matrix)
+        atomic_write_text(Path(f"{cache_prefix}_indices.json"), json.dumps(valid_indices, indent=2))
 
     return emb_matrix, valid_indices
 
