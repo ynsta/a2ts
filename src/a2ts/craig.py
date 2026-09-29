@@ -8,6 +8,7 @@ from typing import Any
 
 from a2ts.cache import atomic_write_text
 from a2ts.models import (
+    AlignedTurn,
     EntityRecord,
     RawSegment,
     SpeakerInfo,
@@ -380,4 +381,55 @@ def transcribe_craig_track(
 
     save_track_cache(cache_path, provenance, results)
     return results
+
+
+def merge_craig_tracks_to_turns(
+    track_segments: list[tuple[str, RawSegment]],
+    speakers: dict[str, SpeakerInfo],
+) -> list[AlignedTurn]:
+    """Interleave and align multi-track Craig segments into chronological speaker turns.
+
+    Segments are sorted chronologically by (seg.start, track_id).
+    Speaker names are resolved from speakers mapping or fallback to track username:
+    - If found and is_dm: 'MJ (discord_username)' or '{character_name} (discord_username)'
+    - If found and not is_dm: '{character_name} (discord_username)'
+    - If not found: 'username'
+    """
+    sorted_items = sorted(track_segments, key=lambda item: (item[1].start, item[0]))
+
+    aligned_turns: list[AlignedTurn] = []
+    for turn_id, (track_id, seg) in enumerate(sorted_items):
+        username = parse_track_username(Path(track_id))
+        speaker_info = speakers.get(username)
+        if speaker_info is None:
+            username_lower = username.lower()
+            speaker_info = next(
+                (sp for k, sp in speakers.items() if k.lower() == username_lower),
+                None,
+            )
+
+        if speaker_info is not None:
+            if speaker_info.is_dm:
+                char_name = speaker_info.character_name if speaker_info.character_name else "MJ"
+                label = f"{char_name} ({speaker_info.discord_username or username})"
+            else:
+                char_name = speaker_info.character_name or speaker_info.discord_username or username
+                label = f"{char_name} ({speaker_info.discord_username or username})"
+        else:
+            label = username
+
+        aligned_turns.append(
+            AlignedTurn(
+                turn_id=turn_id,
+                start=seg.start,
+                end=seg.end,
+                speaker=label,
+                cluster_id=track_id,
+                text=seg.text,
+                words=seg.words,
+            )
+        )
+
+    return aligned_turns
+
 

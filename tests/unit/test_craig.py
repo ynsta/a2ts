@@ -5,19 +5,27 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
 from a2ts.craig import (
     build_craig_prompt,
     compute_track_provenance,
     discover_tracks,
     find_speakers_file,
     load_track_cache,
+    merge_craig_tracks_to_turns,
     parse_info_file,
     parse_speakers_file,
     parse_track_username,
     save_track_cache,
     transcribe_craig_track,
 )
-from a2ts.models import RawSegment, SpeakerInfo, TrackCacheProvenance, WordTimestamp
+from a2ts.models import (
+    AlignedTurn,
+    RawSegment,
+    SpeakerInfo,
+    TrackCacheProvenance,
+    WordTimestamp,
+)
 
 
 def test_discover_tracks(tmp_path: Path) -> None:
@@ -503,4 +511,189 @@ def test_transcribe_craig_track_caching(tmp_path: Path) -> None:
     )
     assert len(forced_segments) == 1
     mock_model.transcribe.assert_called_once()
+
+
+def test_merge_craig_tracks_to_turns() -> None:
+    speakers = {
+        "merrow1": SpeakerInfo(
+            discord_username="merrow1",
+            character_name="Merrow Ashdale",
+            is_dm=False,
+        ),
+        "tessaro": SpeakerInfo(
+            discord_username="tessaro",
+            character_name="MJ",
+            is_dm=True,
+        ),
+        "narrator": SpeakerInfo(
+            discord_username="narrator",
+            character_name="Conteur",
+            is_dm=True,
+        ),
+        "carol": SpeakerInfo(
+            discord_username="carol",
+            character_name="Lyra",
+            is_dm=False,
+        ),
+    }
+
+    w1 = WordTimestamp(word="Bonjour", start=0.0, end=0.8, probability=0.9)
+    w2 = WordTimestamp(word="monde.", start=0.8, end=1.5, probability=0.95)
+
+    track_segments = [
+        # Track 1: out of chronological order
+        (
+            "1-merrow1",
+            RawSegment(id=10, start=10.0, end=12.0, text="Je fouille la pièce.", words=[]),
+        ),
+        (
+            "1-merrow1",
+            RawSegment(id=0, start=0.0, end=2.0, text="Bonjour monde.", words=[w1, w2]),
+        ),
+        # Track 2: GM turn
+        (
+            "2-tessaro",
+            RawSegment(id=0, start=1.5, end=4.0, text="Que faites-vous ?", words=[]),
+        ),
+        # Track 3: Carol turn
+        (
+            "10-carol",
+            RawSegment(id=0, start=0.5, end=1.0, text="Attendez !", words=[]),
+        ),
+        # Track 4: Narrator (DM with custom character name)
+        (
+            "3-narrator",
+            RawSegment(id=0, start=15.0, end=18.0, text="Le vent souffle.", words=[]),
+        ),
+        # Track 5: Unknown speaker not in roster, no track index prefix
+        (
+            "stranger",
+            RawSegment(id=0, start=5.0, end=6.0, text="Qui va là ?", words=[]),
+        ),
+    ]
+
+    turns = merge_craig_tracks_to_turns(track_segments, speakers)
+
+    # 1. Output length and types
+    assert len(turns) == 6
+    assert all(isinstance(t, AlignedTurn) for t in turns)
+
+    # 2. Chronological ordering by (start, track_id)
+    # Expected order:
+    # 0.0: 1-merrow1
+    # 0.5: 10-carol
+    # 1.5: 2-tessaro
+    # 5.0: stranger
+    # 10.0: 1-merrow1
+    # 15.0: 3-narrator
+    assert [t.start for t in turns] == [0.0, 0.5, 1.5, 5.0, 10.0, 15.0]
+
+    # 3. Sequential turn IDs
+    assert [t.turn_id for t in turns] == [0, 1, 2, 3, 4, 5]
+
+    # 4. Cluster IDs match original track IDs
+    assert [t.cluster_id for t in turns] == [
+        "1-merrow1",
+        "10-carol",
+        "2-tessaro",
+        "stranger",
+        "1-merrow1",
+        "3-narrator",
+    ]
+
+    # 5. Speaker labels
+    assert turns[0].speaker == "Merrow Ashdale (merrow1)"
+    assert turns[1].speaker == "Lyra (carol)"
+    assert turns[2].speaker == "MJ (tessaro)"
+    assert turns[3].speaker == "stranger"  # fallback to username
+    assert turns[4].speaker == "Merrow Ashdale (merrow1)"
+    assert turns[5].speaker == "Conteur (narrator)"  # DM with custom character name
+
+    # 6. Preserved texts and words
+    assert turns[0].text == "Bonjour monde."
+    assert len(turns[0].words) == 2
+    assert turns[0].words[0].word == "Bonjour"
+    assert turns[2].text == "Que faites-vous ?"
+    assert turns[2].end == 4.0
+
+
+def test_merge_craig_tracks_empty_and_edge_cases() -> None:
+    # Empty inputs
+    assert merge_craig_tracks_to_turns([], {}) == []
+
+    speakers = {
+        "alice": SpeakerInfo(discord_username="alice", character_name="Alice", is_dm=False),
+    }
+
+    # Same start timestamp tie-breaking by track_id
+    seg_b = RawSegment(id=0, start=1.0, end=2.0, text="Track B")
+    seg_a = RawSegment(id=1, start=1.0, end=2.0, text="Track A")
+    turns = merge_craig_tracks_to_turns([("track_b", seg_b), ("track_a", seg_a)], {})
+    assert turns[0].cluster_id == "track_a"
+    assert turns[1].cluster_id == "track_b"
+    assert turns[0].turn_id == 0
+    assert turns[1].turn_id == 1
+
+    # Track identifier variations: with .flac extension or case variation
+    seg = RawSegment(id=0, start=0.0, end=1.0, text="Hello")
+    turns_ext = merge_craig_tracks_to_turns([("1-alice.flac", seg)], speakers)
+    assert turns_ext[0].speaker == "Alice (alice)"
+
+    # Case insensitive speaker lookup
+    turns_case = merge_craig_tracks_to_turns([("1-Alice", seg)], speakers)
+    assert turns_case[0].speaker == "Alice (alice)"
+
+
+def test_merge_craig_tracks_downstream_compatibility() -> None:
+    speakers = {
+        "merrow1": SpeakerInfo(
+            discord_username="merrow1",
+            character_name="Merrow",
+            is_dm=False,
+        ),
+        "tessaro": SpeakerInfo(
+            discord_username="tessaro",
+            character_name="MJ",
+            is_dm=True,
+        ),
+    }
+
+    track_segments = [
+        # Two consecutive turns by merrow with small gap <= 2.0s -> should debounce
+        (
+            "1-merrow1",
+            RawSegment(id=0, start=1.0, end=2.0, text="Je lance", words=[]),
+        ),
+        (
+            "1-merrow1",
+            RawSegment(id=1, start=2.5, end=4.0, text="un dé de 20.", words=[]),
+        ),
+        # Next turn by GM
+        (
+            "2-tessaro",
+            RawSegment(id=0, start=5.0, end=7.0, text="C'est réussi !", words=[]),
+        ),
+    ]
+
+    raw_turns = merge_craig_tracks_to_turns(track_segments, speakers)
+    debounced = debounce_consecutive_turns(raw_turns, threshold_seconds=2.0)
+
+    # 3 turns should debounce into 2
+    assert len(debounced) == 2
+    assert debounced[0].speaker == "Merrow (merrow1)"
+    assert debounced[0].start == 1.0
+    assert debounced[0].end == 4.0
+    # RPG terms normalization occurs in debouncer
+    assert debounced[0].text == "Je lance 1d20."
+
+    assert debounced[1].speaker == "MJ (tessaro)"
+    assert debounced[1].text == "C'est réussi !"
+
+    # Render markdown transcript
+    markdown = render_markdown_transcript(debounced)
+    assert "### [00:00:01 - 00:00:04] Merrow (merrow1)" in markdown
+    assert "Je lance 1d20." in markdown
+    assert "### [00:00:05 - 00:00:07] MJ (tessaro)" in markdown
+    assert "C'est réussi !" in markdown
+
 
