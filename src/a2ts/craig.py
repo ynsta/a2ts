@@ -1,10 +1,23 @@
 """Craig multi-track audio discovery, username parsing, and file readers."""
 
+import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
-from a2ts.models import SpeakerInfo
+from a2ts.cache import atomic_write_text
+from a2ts.models import (
+    EntityRecord,
+    RawSegment,
+    SpeakerInfo,
+    TrackCacheFile,
+    TrackCacheProvenance,
+    WordTimestamp,
+)
+from a2ts.vocab import build_biasing_prompt, scan_context_directory
+
+logger = logging.getLogger(__name__)
 
 TRACK_FILE_PATTERN = re.compile(r"^(\d+)-(.*)\.flac$", re.IGNORECASE)
 
@@ -204,3 +217,167 @@ def find_speakers_file(recording_dir: Path, custom_path: Path | None = None) -> 
         if candidate.is_file():
             return candidate.resolve()
     return None
+
+
+def compute_track_provenance(
+    track_path: Path,
+    model_name: str,
+    compute_type: str,
+    prompt_hash: str,
+    vad_parameters: dict[str, Any] | None = None,
+) -> TrackCacheProvenance:
+    """Compute provenance metadata for an audio track file."""
+    stat = track_path.stat()
+    return TrackCacheProvenance(
+        schema_version=1,
+        model_name=model_name,
+        compute_type=compute_type,
+        prompt_hash=prompt_hash,
+        vad_parameters=vad_parameters if vad_parameters is not None else {},
+        source_file_size=stat.st_size,
+        source_file_mtime=stat.st_mtime,
+    )
+
+
+def build_craig_prompt(
+    speakers: dict[str, SpeakerInfo],
+    context_dir: Path | None = None,
+    max_tokens: int = 220,
+) -> str:
+    """Assemble token-budgeted prompt containing speaker/character names and Obsidian lore terms."""
+    records: list[EntityRecord] = []
+    for speaker in speakers.values():
+        if speaker.character_name:
+            records.append(EntityRecord(name=speaker.character_name, kind="character"))
+        for nick in speaker.nicknames:
+            if nick:
+                records.append(EntityRecord(name=nick, kind="nickname"))
+        if speaker.discord_username:
+            records.append(EntityRecord(name=speaker.discord_username, kind="username"))
+
+    if context_dir is not None and context_dir.is_dir():
+        records.extend(scan_context_directory(context_dir))
+
+    return build_biasing_prompt(records, max_tokens=max_tokens)
+
+
+def load_track_cache(
+    cache_path: Path,
+    expected_provenance: TrackCacheProvenance,
+    force: bool = False,
+) -> list[RawSegment] | None:
+    """Load cached segments if provenance strictly matches expected settings, or None if miss/stale."""
+    if force or not cache_path.is_file():
+        return None
+
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "provenance" not in data:
+            return None
+        cached = TrackCacheFile.model_validate(data)
+        p = cached.provenance
+        if (
+            p.schema_version == expected_provenance.schema_version
+            and p.model_name == expected_provenance.model_name
+            and p.compute_type == expected_provenance.compute_type
+            and p.prompt_hash == expected_provenance.prompt_hash
+            and p.source_file_size == expected_provenance.source_file_size
+            and abs(p.source_file_mtime - expected_provenance.source_file_mtime) < 1e-4
+            and p.vad_parameters == expected_provenance.vad_parameters
+        ):
+            return cached.segments
+        return None
+    except (json.JSONDecodeError, OSError, ValueError, KeyError) as exc:
+        logger.debug("Failed reading track cache %s: %s", cache_path, exc)
+        return None
+
+
+def save_track_cache(
+    cache_path: Path,
+    provenance: TrackCacheProvenance,
+    segments: list[RawSegment],
+) -> None:
+    """Serialize track transcription provenance and segments atomically to JSON cache."""
+    cache_file = TrackCacheFile(provenance=provenance, segments=segments)
+    atomic_write_text(cache_path, cache_file.model_dump_json(indent=2))
+
+
+def transcribe_craig_track(
+    model: Any,
+    track_path: Path,
+    provenance: TrackCacheProvenance,
+    cache_dir: Path,
+    initial_prompt: str | None = None,
+    force: bool = False,
+) -> list[RawSegment]:
+    """Transcribe single Craig audio track using Faster-Whisper with JSON caching."""
+    cache_path = cache_dir / f"{track_path.stem}.json"
+    cached_segments = load_track_cache(cache_path, provenance, force=force)
+    if cached_segments is not None:
+        return cached_segments
+
+    transcribe_out = model.transcribe(
+        str(track_path),
+        initial_prompt=initial_prompt,
+        word_timestamps=True,
+    )
+    if isinstance(transcribe_out, tuple):
+        segments_gen, _ = transcribe_out
+    else:
+        segments_gen = transcribe_out
+
+    results: list[RawSegment] = []
+    for i, s in enumerate(segments_gen):
+        if isinstance(s, RawSegment):
+            results.append(s)
+            continue
+
+        if isinstance(s, dict):
+            start = float(s["start"])
+            end = float(s["end"])
+            text = str(s["text"]).strip()
+            raw_words = s.get("words") or []
+            seg_id = int(s.get("id", i))
+        else:
+            start = float(getattr(s, "start", 0.0))
+            end = float(getattr(s, "end", 0.0))
+            text = str(getattr(s, "text", "")).strip()
+            raw_words = getattr(s, "words", None) or []
+            seg_id = int(getattr(s, "id", i))
+
+        words: list[WordTimestamp] = []
+        for w in raw_words:
+            if isinstance(w, WordTimestamp):
+                words.append(w)
+            elif isinstance(w, dict):
+                words.append(
+                    WordTimestamp(
+                        word=str(w.get("word", "")).strip(),
+                        start=float(w.get("start", start)),
+                        end=float(w.get("end", end)),
+                        probability=float(w.get("probability", 1.0)),
+                    )
+                )
+            else:
+                words.append(
+                    WordTimestamp(
+                        word=str(getattr(w, "word", "")).strip(),
+                        start=float(getattr(w, "start", start)),
+                        end=float(getattr(w, "end", end)),
+                        probability=float(getattr(w, "probability", 1.0)),
+                    )
+                )
+
+        results.append(
+            RawSegment(
+                id=seg_id,
+                start=start,
+                end=end,
+                text=text,
+                words=words,
+            )
+        )
+
+    save_track_cache(cache_path, provenance, results)
+    return results
+
