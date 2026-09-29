@@ -1,8 +1,9 @@
 [project]
 name = "a2ts"
-version = "0.1.0"
+version = "0.2.0.dev1"
 description = "Contextualized Audio/Video Transcriber (Voxtral / Whisper)"
 readme = "README.md"
+license = "Apache-2.0"
 authors = [
     { name = "Stany MARCEL", email = "stanypub@gmail.com" }
 ]
@@ -20,6 +21,7 @@ dependencies = [
     "nvidia-cudnn-cu12>=9.26.0.51",
     "speechbrain>=1.1.1",
     "scikit-learn>=1.6.0",
+    "transformers>=4.54.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +40,19 @@ a2ts = "a2ts.cli:app"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.agents",
+    "/.superpowers",
+    "/scratch",
+    "/contexte",
+    "/recordings",
+    "/docs/plans",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/a2ts"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
@@ -48,3 +63,7 @@ dev = [
 [tool.ruff]
 src = ["src", "tests"]
 extend-exclude = ["scratch", ".superpowers", "docs"]
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/huggingface/transformers" }
+

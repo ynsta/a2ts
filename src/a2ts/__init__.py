@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from a2ts!")
+"""a2ts: Contextualized Audio/Video Transcriber."""
+
+__version__ = "0.2.0.dev1"
