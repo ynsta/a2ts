@@ -1,6 +1,7 @@
 from a2ts.consolidator import (
     debounce_consecutive_turns,
     format_timestamp,
+    normalize_rpg_terms,
     render_markdown_transcript,
 )
 from a2ts.models import AlignedTurn, WordTimestamp
@@ -129,3 +130,43 @@ def test_render_markdown_transcript() -> None:
 
 def test_render_markdown_transcript_empty() -> None:
     assert render_markdown_transcript([]) == ""
+
+
+def test_normalize_rpg_terms_dice_patterns() -> None:
+    assert normalize_rpg_terms("lance un dé 20") == "lance 1d20"
+    assert normalize_rpg_terms("lance un dé de 20") == "lance 1d20"
+    assert normalize_rpg_terms("lance deux dés de 6") == "lance 2d6"
+    assert normalize_rpg_terms("fais trois dés de six") == "fais 3d6"
+    assert normalize_rpg_terms("lance un dé cent") == "lance 1d100"
+    assert normalize_rpg_terms("lance 1 dé 12") == "lance 1d12"
+    assert normalize_rpg_terms("lance quatre dés de 8") == "lance 4d8"
+    assert normalize_rpg_terms("cinq dés de dix") == "5d10"
+    assert normalize_rpg_terms("un dé 4") == "1d4"
+
+
+def test_normalize_rpg_terms_exclusions() -> None:
+    assert normalize_rpg_terms("il y a 20 gardes") == "il y a 20 gardes"
+    assert normalize_rpg_terms("des 20 gardes approchent") == "des 20 gardes approchent"
+    assert normalize_rpg_terms("pendant des 10 minutes") == "pendant des 10 minutes"
+    assert normalize_rpg_terms("chacun des 6 joueurs") == "chacun des 6 joueurs"
+
+
+def test_normalize_rpg_terms_phonetic_fixes() -> None:
+    assert normalize_rpg_terms("fais des jets-dés") == "fais des jets de dés"
+    assert normalize_rpg_terms("fais un jet de délai") == "fais un jet de dés"
+
+
+def test_debounce_applies_rpg_normalization() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="MJ",
+            cluster_id="C0",
+            text="Lance un dé 20 pour voir.",
+        ),
+    ]
+    debounced = debounce_consecutive_turns(turns)
+    assert debounced[0].text == "Lance 1d20 pour voir."
+
