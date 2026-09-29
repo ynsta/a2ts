@@ -3,8 +3,11 @@ from a2ts.models import (
     EntityRecord,
     RawSegment,
     SessionMetadata,
+    SpeakerInfo,
     SpeakersMapping,
     SpeakerTurn,
+    TrackCacheFile,
+    TrackCacheProvenance,
     WordTimestamp,
 )
 
@@ -133,3 +136,84 @@ def test_voice_profile_and_database() -> None:
     assert db.speakers["Brakk"].sample_count == 5
     dumped = db.model_dump()
     assert dumped["speakers"]["Brakk"]["speaker_name"] == "Brakk"
+
+
+def test_craig_models() -> None:
+    # 1. SpeakerInfo defaults & full validation
+    speaker_min = SpeakerInfo(
+        discord_username="brakk_player",
+        character_name="Brakk",
+    )
+    assert speaker_min.discord_username == "brakk_player"
+    assert speaker_min.character_name == "Brakk"
+    assert speaker_min.role is None
+    assert speaker_min.nicknames == []
+    assert speaker_min.is_dm is False
+    assert speaker_min.raw_description is None
+
+    speaker_full = SpeakerInfo(
+        discord_username="gm_user",
+        character_name="MJ",
+        role="Maître du Jeu",
+        nicknames=["DM", "Boss"],
+        is_dm=True,
+        raw_description="MJ: Maître du Jeu, surnoms: (DM, Boss)",
+    )
+    assert speaker_full.role == "Maître du Jeu"
+    assert speaker_full.nicknames == ["DM", "Boss"]
+    assert speaker_full.is_dm is True
+    assert speaker_full.raw_description == "MJ: Maître du Jeu, surnoms: (DM, Boss)"
+
+    # Serialization roundtrip
+    speaker_dump = speaker_full.model_dump()
+    speaker_restored = SpeakerInfo.model_validate(speaker_dump)
+    assert speaker_restored == speaker_full
+
+    # 2. TrackCacheProvenance defaults & validation
+    prov = TrackCacheProvenance(
+        model_name="large-v3",
+        compute_type="float16",
+        prompt_hash="hash_abc123",
+        source_file_size=1048576,
+        source_file_mtime=1727640000.0,
+    )
+    assert prov.schema_version == 1
+    assert prov.vad_parameters == {}
+    assert prov.model_name == "large-v3"
+    assert prov.compute_type == "float16"
+    assert prov.prompt_hash == "hash_abc123"
+    assert prov.source_file_size == 1048576
+    assert prov.source_file_mtime == 1727640000.0
+
+    prov_custom = TrackCacheProvenance(
+        schema_version=2,
+        model_name="turbo",
+        compute_type="int8",
+        prompt_hash="hash_def456",
+        vad_parameters={"threshold": 0.6, "min_speech_duration_ms": 250},
+        source_file_size=2097152,
+        source_file_mtime=1727643600.5,
+    )
+    assert prov_custom.schema_version == 2
+    assert prov_custom.vad_parameters["threshold"] == 0.6
+
+    # 3. TrackCacheFile validation & roundtrip
+    seg = RawSegment(
+        id=0,
+        start=0.5,
+        end=3.2,
+        text="Bonjour tout le monde.",
+        words=[WordTimestamp(word="Bonjour", start=0.5, end=1.0, probability=0.99)],
+    )
+    cache_file = TrackCacheFile(
+        provenance=prov,
+        segments=[seg],
+    )
+    assert cache_file.provenance.model_name == "large-v3"
+    assert len(cache_file.segments) == 1
+    assert cache_file.segments[0].text == "Bonjour tout le monde."
+
+    json_str = cache_file.model_dump_json()
+    cache_restored = TrackCacheFile.model_validate_json(json_str)
+    assert cache_restored == cache_file
+    assert cache_restored.segments[0].words[0].word == "Bonjour"

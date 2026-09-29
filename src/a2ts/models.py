@@ -1,6 +1,7 @@
 """Core data models for a2ts."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -133,3 +134,33 @@ class DiarizationCacheFile(BaseModel):
 
     provenance: DiarizationCacheProvenance
     turns: list[SpeakerTurn]
+
+
+class SpeakerInfo(BaseModel):
+    """Speaker identity and role metadata parsed from speakers.md."""
+
+    discord_username: str
+    character_name: str
+    role: str | None = None
+    nicknames: list[str] = Field(default_factory=list)
+    is_dm: bool = False
+    raw_description: str | None = None
+
+
+class TrackCacheProvenance(BaseModel):
+    """Provenance tracking all settings affecting a transcribed audio track."""
+
+    schema_version: int = 1
+    model_name: str
+    compute_type: str
+    prompt_hash: str
+    vad_parameters: dict[str, Any] = Field(default_factory=dict)
+    source_file_size: int
+    source_file_mtime: float
+
+
+class TrackCacheFile(BaseModel):
+    """Versioned storage file for single-track transcription segments."""
+
+    provenance: TrackCacheProvenance
+    segments: list[RawSegment]
