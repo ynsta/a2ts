@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, `uv`, `pydantic>=2.10.0`, `typer>=0.15.0`, `rich>=13.9.0`, `faster-whisper>=1.2.1`, `transformers>=4.54.0`, `torch>=2.5.0`, `bitsandbytes>=0.45.0`, `mistral-common[audio]>=1.8.1`, `librosa>=1.0.0`, `soundfile>=0.13.0`, `tiktoken>=0.9.0`, `ffmpeg`.
 
-**Spec:** [docs/superpowers/specs/2026-09-21-a2ts-architecture-design.md](file:///home/stany/Work/a2ts/docs/superpowers/specs/2026-09-21-a2ts-architecture-design.md)
+**Spec:** [docs/archive/superpowers/specs/2026-09-21-a2ts-architecture-design.md](../specs/2026-09-21-a2ts-architecture-design.md)
 
 ## Global Constraints
 
