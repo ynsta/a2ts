@@ -19,6 +19,16 @@ from a2ts.cache import (
     save_transcript_cache,
 )
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
+from a2ts.craig import (
+    build_craig_prompt,
+    compute_track_provenance,
+    discover_tracks,
+    find_speakers_file,
+    merge_craig_tracks_to_turns,
+    parse_info_file,
+    parse_speakers_file,
+    transcribe_craig_track,
+)
 from a2ts.diarizer import (
     classify_clusters_to_profiles,
     compute_voice_profiles,
@@ -50,7 +60,7 @@ from a2ts.timeline import (
     assign_time_slices,
     split_cluster_at_time,
 )
-from a2ts.transcriber import get_engine
+from a2ts.transcriber import WhisperEngine, get_engine
 from a2ts.vocab import (
     build_biasing_prompt,
     load_speaker_names,
@@ -1145,5 +1155,168 @@ def recluster(
     )
 
 
+@app.command("craig")
+def craig(
+    recording_dir: Annotated[
+        Path, typer.Argument(help="Path to folder containing Craig .flac tracks")
+    ],
+    model_name: Annotated[
+        str, typer.Option(help="Whisper model name")
+    ] = "large-v3",
+    device: Annotated[
+        str, typer.Option(help="Device to run inference on (auto/cuda/cpu)")
+    ] = "auto",
+    compute_type: Annotated[
+        str, typer.Option(help="Computation type (float16/int8/etc.)")
+    ] = "float16",
+    context_dir: Annotated[
+        Path | None, typer.Option(help="Directory containing Obsidian markdown notes")
+    ] = Path("contexte"),
+    speakers_file: Annotated[
+        Path | None, typer.Option(help="Path to speakers roster markdown file")
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option(help="Output markdown transcript path")
+    ] = None,
+    debounce: Annotated[
+        float, typer.Option(help="Debounce window in seconds for consecutive turns")
+    ] = 2.0,
+    force: Annotated[
+        bool, typer.Option("--force", help="Force re-transcription ignoring existing cache")
+    ] = False,
+    refine: Annotated[
+        bool,
+        typer.Option(
+            "--refine/--no-refine",
+            help="Run local LLM refiner pass on transcript",
+        ),
+    ] = False,
+    refine_model: Annotated[
+        str, typer.Option(help="Model name for LLM refiner")
+    ] = "gemini-2.5-flash",
+    refine_effort: Annotated[
+        str, typer.Option(help="Reasoning effort for LLM refiner (low/medium/high)")
+    ] = "low",
+) -> None:
+    """Transcribe and merge multi-track Craig Discord recordings into a unified transcript."""
+    console.print(
+        f"\n[bold green]=== Starting Craig Pipeline for {recording_dir.name} ===[/bold green]\n"
+    )
+
+    # 1. Verify recording_dir.is_dir(). Discover tracks. If empty, report error and exit with code 1.
+    if not recording_dir.is_dir():
+        console.print(
+            f"[bold red]Recording directory not found: {recording_dir}[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        tracks = discover_tracks(recording_dir)
+    except FileNotFoundError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(code=1)
+
+    if not tracks:
+        console.print(
+            f"[bold red]No Craig .flac tracks found in {recording_dir}[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold]Discovered {len(tracks)} audio tracks in {recording_dir}[/bold]")
+
+    # 2. Locate and parse speakers.md via find_speakers_file and parse_speakers_file
+    spk_path = find_speakers_file(recording_dir, speakers_file)
+    if speakers_file is not None and spk_path is None:
+        console.print(f"[bold red]Speakers file not found: {speakers_file}[/bold red]")
+        raise typer.Exit(code=1)
+
+    speakers = parse_speakers_file(spk_path) if spk_path is not None else {}
+    if speakers:
+        console.print(f"[green]Loaded {len(speakers)} speakers from {spk_path}[/green]")
+    else:
+        console.print("[yellow]No speakers roster file found; using track usernames.[/yellow]")
+
+    # 3. Locate and parse info.txt via parse_info_file if present
+    info_path = recording_dir / "info.txt"
+    if info_path.is_file():
+        info_data = parse_info_file(info_path)
+        console.print(f"[cyan]Loaded info.txt metadata ({len(info_data.get('tracks', []))} tracks registered)[/cyan]")
+    else:
+        info_data = None
+
+    # 4. Build initial prompt via build_craig_prompt(speakers, context_dir)
+    prompt = build_craig_prompt(speakers, context_dir=context_dir)
+
+    # 5. Compute prompt hash: compute_prompt_hash(prompt)
+    prompt_hash = compute_prompt_hash(prompt)
+
+    # 6. Load whisper engine via get_engine("whisper", model_name=model_name, device=device, compute_type=compute_type)
+    whisper_engine = get_engine(
+        "whisper",
+        model_name=model_name,
+        device=device,
+        compute_type=compute_type,
+    )
+    whisper_model: Any = whisper_engine
+    if isinstance(whisper_engine, WhisperEngine):
+        whisper_model = whisper_engine._get_model()
+
+    # 7. Cache dir: cache_dir = recording_dir / ".transcripts"
+    cache_dir = recording_dir / ".transcripts"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # 8. Transcribe each track with transcribe_craig_track using provenance from compute_track_provenance
+    all_segments: list[tuple[str, RawSegment]] = []
+    for track in tracks:
+        prov = compute_track_provenance(
+            track_path=track,
+            model_name=model_name,
+            compute_type=compute_type,
+            prompt_hash=prompt_hash,
+        )
+        segments = transcribe_craig_track(
+            model=whisper_model,
+            track_path=track,
+            provenance=prov,
+            cache_dir=cache_dir,
+            initial_prompt=prompt if prompt else None,
+            force=force,
+        )
+        for seg in segments:
+            all_segments.append((track.stem, seg))
+
+    console.print(
+        f"[green]Transcribed {len(tracks)} tracks ({len(all_segments)} raw segments).[/green]"
+    )
+
+    # 9. Merge tracks into aligned_turns = merge_craig_tracks_to_turns(all_segments, speakers)
+    aligned_turns = merge_craig_tracks_to_turns(all_segments, speakers)
+
+    # 10. Debounce turns via debounced_turns = debounce_consecutive_turns(aligned_turns, threshold_seconds=debounce)
+    debounced_turns = debounce_consecutive_turns(
+        aligned_turns, threshold_seconds=debounce
+    )
+
+    # 11. Render markdown via render_markdown_transcript(debounced_turns)
+    raw_md = render_markdown_transcript(debounced_turns)
+
+    # 12. If refine: refine with refine_transcript_markdown
+    final_md = raw_md
+    if refine:
+        console.print(
+            f"[bold]Refining transcript via local agy with model '{refine_model}'...[/bold]"
+        )
+        final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
+
+    # 13. Write output to out_path atomically using atomic_write_text
+    out_path = output if output is not None else recording_dir / "transcript.md"
+    atomic_write_text(out_path, final_md)
+
+    console.print(
+        f"\n[bold green]✓ Craig pipeline completed. Transcript saved to:[/bold green] {out_path}\n"
+    )
+
+
 if __name__ == "__main__":
     app()
+

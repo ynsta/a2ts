@@ -36,6 +36,7 @@ def test_help_command() -> None:
     assert "recluster" in result.output
     assert "split" in result.output
     assert "info" in result.output
+    assert "craig" in result.output
 
 
 def test_extract_vocab_command(tmp_path: Path) -> None:
@@ -909,3 +910,228 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
     assert "SPEAKER_" not in content
     assert "Brakk" in content
     assert "Merrow" in content
+
+
+def test_craig_command_e2e_mocked(tmp_path: Path) -> None:
+    """Test craig subcommand runs track discovery, transcription, debouncing, and saves transcript."""
+    rec_dir = tmp_path / "recording"
+    rec_dir.mkdir()
+
+    # Create dummy flac files
+    (rec_dir / "1-merrow1.flac").write_bytes(b"flac data 1")
+    (rec_dir / "2-tessaro.flac").write_bytes(b"flac data 2")
+
+    # Create speakers.md
+    (rec_dir / "speakers.md").write_text(
+        "* tessaro: Le MJ, Maître du Jeu\n"
+        "* merrow1: Merrow Ashdale, barde humain, surnoms: (Mimi)\n",
+        encoding="utf-8",
+    )
+
+    # Create info.txt
+    (rec_dir / "info.txt").write_text(
+        "Guild: Adventure Club\nChannel: Session 1\nTracks:\n1-merrow1: merrow1\n2-tessaro: tessaro\n",
+        encoding="utf-8",
+    )
+
+    # Mock Whisper engine
+    mock_engine = MagicMock()
+
+    def mock_transcribe(audio_path: str, **kwargs: object) -> list[RawSegment]:
+        path = Path(audio_path)
+        if "1-merrow1" in path.name:
+            return [
+                RawSegment(
+                    id=0,
+                    start=1.0,
+                    end=3.0,
+                    text="Je lance un dé 20 pour mon action.",
+                    words=[
+                        WordTimestamp(word="Je", start=1.0, end=1.5),
+                        WordTimestamp(word="lance", start=1.5, end=2.0),
+                        WordTimestamp(word="un", start=2.0, end=2.3),
+                        WordTimestamp(word="dé", start=2.3, end=2.6),
+                        WordTimestamp(word="20", start=2.6, end=3.0),
+                    ],
+                ),
+                RawSegment(
+                    id=1,
+                    start=3.5,
+                    end=5.0,
+                    text="C'est un jet de délai pour la perception.",
+                    words=[
+                        WordTimestamp(word="C'est", start=3.5, end=4.0),
+                        WordTimestamp(word="un", start=4.0, end=4.2),
+                        WordTimestamp(word="jet", start=4.2, end=4.5),
+                        WordTimestamp(word="de", start=4.5, end=4.7),
+                        WordTimestamp(word="délai", start=4.7, end=5.0),
+                    ],
+                ),
+            ]
+        elif "2-tessaro" in path.name:
+            return [
+                RawSegment(
+                    id=0,
+                    start=6.0,
+                    end=8.0,
+                    text="Tu aperçois une silhouette dans l'ombre.",
+                    words=[
+                        WordTimestamp(word="Tu", start=6.0, end=6.5),
+                        WordTimestamp(word="aperçois", start=6.5, end=8.0),
+                    ],
+                )
+            ]
+        return []
+
+    mock_engine.transcribe.side_effect = mock_transcribe
+
+    with patch("a2ts.cli.get_engine", return_value=mock_engine) as mock_get_engine:
+        result = runner.invoke(app, ["craig", str(rec_dir)])
+
+    assert result.exit_code == 0
+    mock_get_engine.assert_called_once_with(
+        "whisper",
+        model_name="large-v3",
+        device="auto",
+        compute_type="float16",
+    )
+
+    out_transcript = rec_dir / "transcript.md"
+    assert out_transcript.is_file()
+    content = out_transcript.read_text(encoding="utf-8")
+
+    # Verify speaker names and roles
+    assert "Merrow Ashdale (merrow1)" in content
+    assert "MJ (tessaro)" in content
+
+    # Verify RPG term normalization
+    assert "1d20" in content
+    assert "jet de dés" in content
+
+    # Verify debouncing: merrow1's two consecutive segments merged into a single turn [00:00:01 - 00:00:05]
+    assert "### [00:00:01 - 00:00:05] Merrow Ashdale (merrow1)" in content
+    assert "Je lance 1d20 pour mon action. C'est un jet de dés pour la perception." in content
+
+    # Verify cache files were created in .transcripts
+    cache_dir = rec_dir / ".transcripts"
+    assert (cache_dir / "1-merrow1.json").is_file()
+    assert (cache_dir / "2-tessaro.json").is_file()
+
+
+def test_craig_command_missing_dir(tmp_path: Path) -> None:
+    """Test craig subcommand fails with code 1 if directory does not exist."""
+    missing_dir = tmp_path / "nonexistent"
+    result = runner.invoke(app, ["craig", str(missing_dir)])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+def test_craig_command_no_tracks(tmp_path: Path) -> None:
+    """Test craig subcommand fails with code 1 if no Craig flac tracks found."""
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+    result = runner.invoke(app, ["craig", str(empty_dir)])
+    assert result.exit_code == 1
+    assert "no craig" in result.output.lower() or "no tracks" in result.output.lower()
+
+
+def test_craig_command_custom_output_and_speakers(tmp_path: Path) -> None:
+    """Test craig subcommand with --output and --speakers-file options."""
+    rec_dir = tmp_path / "recording"
+    rec_dir.mkdir()
+    (rec_dir / "1-bob.flac").write_bytes(b"bob audio")
+
+    custom_spk = tmp_path / "custom_speakers.md"
+    custom_spk.write_text("* bob: Bob the Builder\n", encoding="utf-8")
+
+    custom_out = tmp_path / "custom_out.md"
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=2.0, text="Can we fix it?", words=[])
+    ]
+
+    with patch("a2ts.cli.get_engine", return_value=mock_engine):
+        result = runner.invoke(
+            app,
+            [
+                "craig",
+                str(rec_dir),
+                "--speakers-file",
+                str(custom_spk),
+                "--output",
+                str(custom_out),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert custom_out.is_file()
+    content = custom_out.read_text(encoding="utf-8")
+    assert "Bob the Builder (bob)" in content
+
+
+def test_craig_command_with_refine(tmp_path: Path) -> None:
+    """Test craig subcommand with --refine flag invokes refiner."""
+    rec_dir = tmp_path / "recording"
+    rec_dir.mkdir()
+    (rec_dir / "1-alice.flac").write_bytes(b"alice audio")
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=2.0, text="Hello world", words=[])
+    ]
+
+    with (
+        patch("a2ts.cli.get_engine", return_value=mock_engine),
+        patch(
+            "a2ts.cli.refine_transcript_markdown",
+            return_value="### [00:00:00 - 00:00:02] alice\nRefined hello world\n",
+        ) as mock_refine,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "craig",
+                str(rec_dir),
+                "--refine",
+                "--refine-model",
+                "custom-llm",
+            ],
+        )
+
+    assert result.exit_code == 0
+    mock_refine.assert_called_once()
+    assert mock_refine.call_args.kwargs.get("agy_model") == "custom-llm"
+    out_file = rec_dir / "transcript.md"
+    assert "Refined hello world" in out_file.read_text(encoding="utf-8")
+
+
+def test_craig_command_caching_and_force(tmp_path: Path) -> None:
+    """Test craig subcommand caches raw track transcriptions and respects --force."""
+    rec_dir = tmp_path / "recording"
+    rec_dir.mkdir()
+    (rec_dir / "1-track.flac").write_bytes(b"flac data")
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=2.0, text="Cached turn", words=[])
+    ]
+
+    with patch("a2ts.cli.get_engine", return_value=mock_engine):
+        # 1. First run: cold cache -> transcribe called
+        res1 = runner.invoke(app, ["craig", str(rec_dir)])
+        assert res1.exit_code == 0
+        assert mock_engine.transcribe.call_count == 1
+
+        # 2. Second run: warm cache -> transcribe not called
+        mock_engine.transcribe.reset_mock()
+        res2 = runner.invoke(app, ["craig", str(rec_dir)])
+        assert res2.exit_code == 0
+        mock_engine.transcribe.assert_not_called()
+
+        # 3. Third run with --force: cache bypassed -> transcribe called
+        mock_engine.transcribe.reset_mock()
+        res3 = runner.invoke(app, ["craig", str(rec_dir), "--force"])
+        assert res3.exit_code == 0
+        assert mock_engine.transcribe.call_count == 1
+
