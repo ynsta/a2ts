@@ -16,6 +16,7 @@ Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, 
 ## Features
 
 - **Single-Stream Audio Extraction**: Extracts audio automatically from any container format (`.mp4`, `.mkv`, `.flac`, `.wav`, `.mp3`) via `ffmpeg`.
+- **Discord Multi-Track Recordings (Craig Adapter)**: Native processing of multi-track Discord recordings via Craig (`a2ts craig`). Transcribes isolated per-user `.flac` tracks independently with track-level caching, extracts usernames and roles from `speakers.md` rosters, interleaves segments chronologically, and debounces dialogue without requiring acoustic diarization.
 - **Domain Lore & Vocabulary Biasing**: Ingests Obsidian / Markdown vaults and wordlists to bias Whisper transcription toward proper nouns, character names, and domain terminology.
 - **Dual Transcription Engines**:
   - **Faster-Whisper**: High-throughput CTranslate2 engine (`large-v3`, `turbo`) with word-level timestamps.
@@ -112,7 +113,35 @@ uv run a2ts run session.mkv \
 | `--no-interactive` | `False` | Skip interactive terminal speaker review |
 | `--no-refine` | `False` | Skip local LLM refinement pass |
 
-### 3. Review Speaker Attribution Post-Hoc
+### 3. Transcribe Multi-Track Discord Recordings (Craig)
+
+Process a multi-track recording directory produced by the Craig Discord bot containing per-speaker `.flac` tracks:
+
+```bash
+uv run a2ts craig ./recordings/session-01/ \
+  --context-dir ./contexte \
+  --speakers-file ./recordings/session-01/speakers.md \
+  --output ./transcripts/session-01.md
+```
+
+#### Key Options for `a2ts craig`:
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `recording_dir` | *Required* | Path to folder containing Craig `.flac` audio tracks |
+| `--model-name` | `large-v3` | Faster-Whisper model checkpoint |
+| `--device` | `auto` | Device to run inference on: `auto`, `cuda`, or `cpu` |
+| `--compute-type` | `float16` | Precision: `float16`, `int8`, `float32`, etc. |
+| `--context-dir` | `contexte` | Obsidian notes folder for domain lore vocabulary biasing |
+| `--speakers-file` | `None` | Path to `speakers.md` roster (auto-discovered if in folder/cwd) |
+| `--debounce` | `2.0` | Debounce window in seconds for consecutive turns from same speaker |
+| `--force` | `False` | Force re-transcription ignoring `.transcripts/` track cache |
+| `--refine / --no-refine` | `False` | Run local LLM refiner pass on transcript via `agy` CLI |
+| `--refine-model` | `gemini-2.5-flash` | Model name for LLM refiner |
+| `--refine-effort` | `low` | Reasoning effort for LLM refiner (`low`, `medium`, `high`) |
+| `--output` | `None` | Markdown transcript destination (defaults to `<recording_dir>/transcript.md`) |
+
+### 4. Review Speaker Attribution Post-Hoc
 
 Re-open the interactive terminal review on a previous run without re-running transcription or diarization:
 
@@ -122,7 +151,7 @@ uv run a2ts review .a2ts/<media-sha256> \
   --output ./transcripts/session.md
 ```
 
-### 4. Re-Cluster with a Different Threshold
+### 5. Re-Cluster with a Different Threshold
 
 Adjust the clustering distance cutoff if the initial run under- or over-segmented speakers:
 

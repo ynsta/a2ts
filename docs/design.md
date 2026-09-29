@@ -42,6 +42,40 @@ flowchart TD
     RefinerStage --> FinalOutput["Final Formatted Transcript\n(transcript.md)"]
 ```
 
+### 1.2 Craig Multi-Track Pipeline Data Flow
+
+When processing multi-track Discord recordings captured by Craig, speaker isolation is physical (per-track audio files), bypassing acoustic diarization:
+
+```mermaid
+flowchart TD
+    RecordingDir["Craig Recording Folder\n(<recording_dir>/)"] --> Discovery["craig.py\n(discover_tracks: ^\\d+-.*\\.flac)"]
+    Discovery --> Tracks["Discrete Audio Tracks\n(1-merrow1.flac, 2-mj.flac, ...)"]
+    
+    SpeakersRoster["Speakers Roster\n(speakers.md)"] --> RosterParser["craig.py\n(parse_speakers_file)"]
+    RosterParser --> SpeakerMetadata["Speaker Metadata\n(SpeakerInfo: character, role, is_dm)"]
+    
+    LoreVault["Obsidian Lore Notes\n(contexte/*.md)"] --> LoreScanner["craig.py & vocab.py\n(scan_context_directory)"]
+    SpeakerMetadata --> CraigPromptBuilder["craig.py\n(build_craig_prompt: names + lore)"]
+    LoreScanner --> CraigPromptBuilder
+    CraigPromptBuilder --> CraigPrompt["Biasing Prompt (< 220 tokens)"]
+    
+    Tracks --> TranscribeTrack["craig.py\n(transcribe_craig_track: Faster-Whisper)"]
+    CraigPrompt --> TranscribeTrack
+    TrackCache["Track JSON Cache\n(<recording_dir>/.transcripts/<track>.json)"] <--> TranscribeTrack
+    
+    TranscribeTrack --> RawSegments["Track RawSegments\n(with word timestamps)"]
+    RawSegments --> MergeTurns["craig.py\n(merge_craig_tracks_to_turns)"]
+    SpeakerMetadata --> MergeTurns
+    MergeTurns --> AlignedTurns["Chronologically Interleaved AlignedTurns"]
+    
+    AlignedTurns --> Debounce["consolidator.py\n(debounce_consecutive_turns)"]
+    Debounce --> Render["consolidator.py\n(render_markdown_transcript)"]
+    Render --> RawMarkdown["Rendered Markdown Transcript"]
+    
+    RawMarkdown --> Refiner["refiner.py\n(Optional agy LLM Refiner)"]
+    Refiner --> FinalMD["Final Transcript\n(<recording_dir>/transcript.md)"]
+```
+
 ---
 
 ## 2. Pipeline Subsystems
@@ -115,6 +149,15 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
   - Invokes local `agy` CLI via subprocess (`agy -m <model> --system <prompt>`).
   - Formats table banter, dice rolls, and out-of-character comments into standard GitHub alerts (`> [!NOTE] Hors-jeu`).
   - Guards against hallucination by verifying that character edit distance remains within safe bounds.
+
+### 2.8 Craig Multi-Track Processing Pipeline (`craig.py`)
+- **Track Discovery & Username Extraction**: Scans `recording_dir` matching `^(\d+)-(.*)\.flac$` sorted numerically by track index. Extracts Discord usernames directly from track file stems (e.g. `1-merrow1.flac` -> `merrow1`).
+- **Speaker Roster Parsing (`speakers.md`)**: Parses lines formatted as `* username: Character Name, Role, surnoms: (Nick1, Nick2)`. Detects Game Master roles (`is_dm`) via regex matching keywords (`MJ`, `DM`, `GM`, `Maître du Jeu`). Falls back to track username when unmapped.
+- **Recording Metadata Parsing (`info.txt`)**: Extracts guild, channel, start time, and registered Discord user IDs from Craig's metadata summary.
+- **Context-Aware Biasing Prompt**: Combines character names, nicknames, and Discord usernames with mined Obsidian lore (`vocab.py`), budgeted to 220 tokens to maximize transcription accuracy for fantasy terminology.
+- **Discrete Track Caching**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation checks track file mtime, size, model name, compute type, and prompt hash.
+- **Chronological Segment Interleaving**: Interleaves multi-track segments using `merge_craig_tracks_to_turns()` sorted by `(seg.start, track_id)`. Bypasses acoustic diarization and clustering entirely because physical track separation provides exact speaker isolation.
+- **Debouncing & Refinement**: Seamlessly chains into `consolidator.py` (`debounce_consecutive_turns()`, `render_markdown_transcript()`) and optional `refiner.py` (`refine_transcript_markdown()`).
 
 ---
 
@@ -216,13 +259,39 @@ class SessionMetadata(BaseModel):
     model_name: str
     time_slices_count: int
     speakers_detected: list[str]
+
+
+class SpeakerInfo(BaseModel):
+    discord_username: str
+    character_name: str
+    role: str | None = None
+    nicknames: list[str] = Field(default_factory=list)
+    is_dm: bool = False
+    raw_description: str | None = None
+
+
+class TrackCacheProvenance(BaseModel):
+    schema_version: int = 1
+    model_name: str
+    compute_type: str
+    prompt_hash: str
+    vad_parameters: dict[str, Any] = Field(default_factory=dict)
+    source_file_size: int
+    source_file_mtime: float
+
+
+class TrackCacheFile(BaseModel):
+    provenance: TrackCacheProvenance
+    segments: list[RawSegment]
 ```
 
 ---
 
 ## 4. Cache & Storage Architecture
 
-All session artifacts are stored inside `.a2ts/`:
+### 4.1 Single-Stream Pipeline Cache (`.a2ts/`)
+
+All single-stream session artifacts are stored inside `.a2ts/`:
 
 ```
 .a2ts/
@@ -239,6 +308,22 @@ All session artifacts are stored inside `.a2ts/`:
 ├── turns.json                        # AlignedTurn representation for session
 ├── speakers_mapping.json             # Manual & automatic speaker resolutions
 └── session.json                      # Comprehensive provenance metadata
+```
+
+### 4.2 Craig Multi-Track Cache (`<recording_dir>/.transcripts/`)
+
+For multi-track recordings processed via `a2ts craig`, intermediate per-track transcripts are cached locally within the recording directory:
+
+```
+<recording_dir>/
+├── 1-merrow1.flac                    # Per-user audio tracks
+├── 2-mj.flac
+├── info.txt                          # Optional recording metadata from Craig
+├── speakers.md                       # Optional speaker identity roster
+├── transcript.md                     # Final assembled transcript output
+└── .transcripts/                     # Discrete per-track transcription cache
+    ├── 1-merrow1.json                # TrackCacheFile (TrackCacheProvenance + RawSegments)
+    └── 2-mj.json
 ```
 
 ---

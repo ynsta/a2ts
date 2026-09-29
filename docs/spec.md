@@ -104,6 +104,18 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Separates in-character roleplay from out-of-character remarks (`> [!NOTE] Hors-jeu`).
   - Enforces safety check (Levenshtein distance limit) to prevent hallucinations.
 
+### 3.8 Multi-Track Ingestion & Discord Craig Pipeline
+- Accepts directories containing isolated per-speaker `.flac` tracks produced by the Craig Discord recording bot (`^(\d+)-(.*)\.flac`).
+- Automatically extracts Discord usernames from track filenames.
+- Parses optional `speakers.md` roster files to map usernames to character names, classes/roles, nicknames, and Game Master (`is_dm`) statuses.
+- Parses optional `info.txt` metadata recorded by Craig (channel, guild, user IDs).
+- Constructs lore-biased transcription prompts integrating character names, nicknames, and Obsidian vault entities under a token budget.
+- Performs discrete Faster-Whisper track transcription with individual JSON caching (`<recording_dir>/.transcripts/<track_stem>.json`) governed by `TrackCacheProvenance`.
+- Interleaves multi-track segments into a unified chronological sequence (`merge_craig_tracks_to_turns`) sorted by segment start time and track identifier.
+- Bypasses acoustic diarization entirely since microphone isolation provides ground-truth speaker attribution.
+- Merges consecutive utterances from the same speaker via configurable debouncing (`--debounce`).
+- Supports the optional local LLM refinement pass (`--refine`).
+
 ---
 
 ## 4. CLI Interface & Contract
@@ -142,35 +154,57 @@ a2ts run <media_file> [OPTIONS]
 | `--output` | `Path` | `transcript.md` | Final Markdown transcript destination |
 | `--cache-dir` | `Path` | `.a2ts` | Local artifact cache directory |
 
-### 4.2 `a2ts review`
+### 4.2 `a2ts craig`
+Transcribes and merges multi-track Craig Discord recordings into a unified transcript.
+
+```bash
+a2ts craig <recording_dir> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `recording_dir` | `Path` (Arg) | *Required* | Path to folder containing Craig `.flac` audio tracks |
+| `--model-name` | `str` | `large-v3` | Whisper model name |
+| `--device` | `str` | `auto` | Device to run inference on (`auto`, `cuda`, `cpu`) |
+| `--compute-type` | `str` | `float16` | Computation type (`float16`, `int8`, `float32`, etc.) |
+| `--context-dir` | `Path` | `contexte` | Directory containing Obsidian markdown notes |
+| `--speakers-file` | `Path` | `None` | Path to speakers roster markdown file (`speakers.md`) |
+| `--output` | `Path` | `None` | Output markdown transcript path (defaults to `<recording_dir>/transcript.md`) |
+| `--debounce` | `float` | `2.0` | Debounce window in seconds for consecutive turns |
+| `--force` | `bool` | `False` | Force re-transcription ignoring existing `.transcripts/` cache |
+| `--refine / --no-refine` | `bool` | `False` | Run local LLM refiner pass on transcript |
+| `--refine-model` | `str` | `gemini-2.5-flash` | Model name for LLM refiner |
+| `--refine-effort` | `str` | `low` | Reasoning effort for LLM refiner (`low`, `medium`, `high`) |
+
+### 4.3 `a2ts review`
 Re-runs interactive speaker review on cached session turns without re-transcribing audio.
 
 ```bash
 a2ts review <session_dir> [OPTIONS]
 ```
 
-### 4.3 `a2ts recluster`
+### 4.4 `a2ts recluster`
 Re-runs agglomerative clustering on cached turn embeddings with a modified threshold or speaker count constraint.
 
 ```bash
 a2ts recluster <session_dir> [OPTIONS]
 ```
 
-### 4.4 `a2ts split`
+### 4.5 `a2ts split`
 Splits an existing speaker cluster at a given timestamp to correct acoustic cluster collisions.
 
 ```bash
 a2ts split <cluster_id> <split_time_seconds> <new_cluster_id> [OPTIONS]
 ```
 
-### 4.5 `a2ts extract-vocab`
+### 4.6 `a2ts extract-vocab`
 Scans a context directory and writes the mined lore vocabulary to standard output or a file.
 
 ```bash
 a2ts extract-vocab [DIRECTORY] [OPTIONS]
 ```
 
-### 4.6 `a2ts info`
+### 4.7 `a2ts info`
 Displays current environment, hardware accelerators, CUDA availability, and installed engine capabilities.
 
 ---

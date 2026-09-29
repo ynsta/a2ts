@@ -115,6 +115,50 @@ uv run a2ts run session.wav \
   --output transcript_refined.md
 ```
 
+### 2.8 Processing Multi-Track Craig Discord Recordings (`a2ts craig`)
+
+Transcribes isolated per-user `.flac` tracks, resolves character identities from `speakers.md`, interleaves turns chronologically, and debounces consecutive utterances:
+
+```bash
+uv run a2ts craig recordings/session_01/ \
+  --context-dir contexte/ \
+  --speakers-file recordings/session_01/speakers.md \
+  --debounce 2.0 \
+  --output transcripts/session_01.md
+```
+
+#### Craig Directory Structure:
+```
+recordings/session_01/
+├── 1-merrow1.flac
+├── 2-thorin.flac
+├── 3-mj.flac
+├── info.txt            # Optional Craig session metadata
+└── speakers.md         # Speaker roster mapping usernames to characters
+```
+
+#### Example `speakers.md` Roster:
+```markdown
+* mj: Le MJ, Maître du Jeu
+* merrow1: Merrow Ashdale, barde elfe, surnoms: (Mimi, Mi)
+- thorin: Thorin Oakenshield, guerrier nain, surnoms: (Thor)
+```
+
+#### Re-Running with Existing Cache:
+If you edit `speakers.md` or change the debounce threshold, re-running `a2ts craig` reuses cached track transcriptions in `<recording_dir>/.transcripts/` instantly. To force re-transcription from scratch:
+```bash
+uv run a2ts craig recordings/session_01/ --force
+```
+
+#### Combining with Local LLM Refinement:
+```bash
+uv run a2ts craig recordings/session_01/ \
+  --context-dir contexte/ \
+  --refine \
+  --refine-model gemini-2.5-flash \
+  --refine-effort low
+```
+
 ---
 
 ## 3. Maintenance & Cache Operations
@@ -132,6 +176,13 @@ rm -rf .a2ts/audio_cache/ .a2ts/diarization/
 
 # Full wipe of session artifacts
 rm -rf .a2ts/
+```
+
+### 3.3 Cleaning Craig Multi-Track Cache
+For Craig recordings, per-track transcription caches reside inside `.transcripts/` within the recording directory:
+```bash
+# Wipe cached track transcriptions for a specific Craig session
+rm -rf recordings/session_01/.transcripts/
 ```
 
 ---
