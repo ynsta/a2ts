@@ -168,6 +168,10 @@ def test_run_caching_and_provenance(
             "whisper",
             "--model-name",
             "custom-whisper-v3",
+            "--device",
+            "cpu",
+            "--compute-type",
+            "int8",
             "--context-dir",
             str(context_dir),
             "--output",
@@ -222,6 +226,8 @@ def test_run_with_diarization(
             str(out_file),
             "--cache-dir",
             str(cache_dir),
+            "--voice-profiles",
+            str(tmp_path / "voice_profiles.json"),
             "--no-interactive",
             "--no-refine",
         ],
@@ -229,6 +235,55 @@ def test_run_with_diarization(
     assert result.exit_code == 0
     mock_diarize.assert_called_once()
     assert out_file.is_file()
+
+
+@patch("a2ts.cli.diarize_segments")
+@patch("a2ts.cli.get_engine")
+@patch("a2ts.cli.extract_audio_to_wav")
+def test_run_with_diarizer_engine(
+    mock_extract: MagicMock,
+    mock_get_engine: MagicMock,
+    mock_diarize: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Test run passes --diarizer-engine to diarize_segments."""
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"dummy")
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+    voice_profiles = tmp_path / "voice_profiles.json"
+
+    mock_extract.return_value = tmp_path / "audio.wav"
+    dummy_engine = MagicMock()
+    dummy_engine.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=2.0, text="First"),
+    ]
+    mock_get_engine.return_value = dummy_engine
+
+    mock_diarize.return_value = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(media_file),
+            "--output",
+            str(out_file),
+            "--cache-dir",
+            str(cache_dir),
+            "--diarizer-engine",
+            "nemotron",
+            "--voice-profiles",
+            str(voice_profiles),
+            "--no-interactive",
+            "--no-refine",
+        ],
+    )
+    assert result.exit_code == 0
+    mock_diarize.assert_called_once()
+    assert mock_diarize.call_args.kwargs.get("engine") == "nemotron"
 
 
 @patch("a2ts.cli.run_interactive_review")
@@ -415,6 +470,8 @@ def test_run_with_cluster_threshold_and_voice_profiles(tmp_path: Path) -> None:
             [
                 "run",
                 str(media_file),
+                "--output",
+                str(tmp_path / "out.md"),
                 "--cache-dir",
                 str(tmp_path / ".a2ts"),
                 "--cluster-threshold",
@@ -502,6 +559,8 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
             [
                 "run",
                 str(media_file),
+                "--output",
+                str(tmp_path / "out.md"),
                 "--cache-dir",
                 str(cache_dir),
                 "--voice-profiles",

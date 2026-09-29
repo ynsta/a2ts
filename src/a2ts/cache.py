@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from a2ts.models import (
     DiarizationCacheFile,
@@ -68,7 +67,7 @@ def load_transcript_cache(
         ):
             return cached.segments
         return None
-    except Exception as exc:
+    except (json.JSONDecodeError, OSError, ValueError, KeyError) as exc:
         logger.debug("Failed reading transcript cache %s: %s", cache_path, exc)
         return None
 
@@ -107,6 +106,6 @@ def load_diarization_cache(
         ):
             return cached.turns
         return None
-    except Exception as exc:
+    except (json.JSONDecodeError, OSError, ValueError, KeyError) as exc:
         logger.debug("Failed reading diarization cache %s: %s", cache_path, exc)
         return None

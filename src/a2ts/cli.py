@@ -12,6 +12,12 @@ import typer
 from rich.console import Console
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
+from a2ts.cache import (
+    atomic_write_text,
+    compute_prompt_hash,
+    load_transcript_cache,
+    save_transcript_cache,
+)
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
 from a2ts.diarizer import (
     classify_clusters_to_profiles,
@@ -23,12 +29,6 @@ from a2ts.diarizer import (
     save_voice_profiles,
 )
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
-from a2ts.cache import (
-    atomic_write_text,
-    compute_prompt_hash,
-    load_transcript_cache,
-    save_transcript_cache,
-)
 from a2ts.models import (
     AlignedTurn,
     DiarizationCacheProvenance,
@@ -962,10 +962,13 @@ def recluster(
             raise typer.Exit(code=1)
 
     try:
-        raw_segments = [
-            RawSegment.model_validate(seg)
-            for seg in json.loads(transcripts_cache.read_text(encoding="utf-8"))
-        ]
+        cache_data = json.loads(transcripts_cache.read_text(encoding="utf-8"))
+        if isinstance(cache_data, dict) and "segments" in cache_data:
+            raw_segments = [
+                RawSegment.model_validate(seg) for seg in cache_data["segments"]
+            ]
+        else:
+            raw_segments = [RawSegment.model_validate(seg) for seg in cache_data]
     except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
         console.print(f"[bold red]Failed to load raw segments: {exc}[/bold red]")
         raise typer.Exit(code=1)

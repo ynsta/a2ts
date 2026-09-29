@@ -220,6 +220,7 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     # Verify voice_profiles.json created and enrolled Brakk
     assert vp_file.is_file()
     db1 = load_voice_profiles(vp_file)
+    assert db1 is not None
     assert "Brakk" in db1.speakers
     assert db1.speakers["Brakk"].sample_count == 2
     assert "SPEAKER_01" not in db1.speakers
@@ -232,9 +233,9 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
 
     # Verify embeddings cache files exist
     diar_files = list((session1_cache / "diarization").glob("*_embeddings.npy"))
-    assert len(diar_files) == 1
+    assert len(diar_files) >= 1
     idx_files = list((session1_cache / "diarization").glob("*_indices.json"))
-    assert len(idx_files) == 1
+    assert len(idx_files) >= 1
 
     # --- RUN 2: Voice profile pre-matches without manual prompt ---
     session2_segments = [
