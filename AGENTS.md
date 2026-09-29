@@ -40,12 +40,15 @@ Any feature, refactor, bugfix touching more than one function, or agent cannot r
 one pass:
 
 1. Run `superpowers:brainstorming` — clarify intent + requirements.
-2. Run `superpowers:writing-plans` — persist plan at `docs/superpowers/plans/<short-name>.md`
-   (commit to git).
+2. Run `superpowers:writing-plans` — persist ephemeral plan at `docs/plans/<short-name>.md`
+   or task scratch.
 3. Execute via `superpowers:executing-plans` (single-session) or
    `superpowers:subagent-driven-development` (parallelisable steps).
 4. Gate completion with `superpowers:verification-before-completion` — no "done" claim
    without evidence (test output, lint output, build output).
+5. **Consolidate to canonical docs:** Transfer resulting designs, specs, decisions, and
+   recipes into `docs/spec.md`, `docs/design.md`, `docs/codemap.md`, `docs/runbook.md`, and
+   `docs/adr/`. Archive or remove ephemeral plan. Ephemeral plans are never sources of truth.
 
 **Trivial edits exception:** typos, single-line config tweaks, self-evident one-liners
 skip steps 1–3 but still verify before claiming done.
@@ -80,6 +83,46 @@ Before merge or PR for non-trivial work: run `superpowers:requesting-code-review
 Never invoke `frontend-design` (any variant: `frontend-design:frontend-design`,
 superpowers UI design flow). Produces low-quality, unusable specs. UI design work:
 brainstorming + writing-plans like any other feature.
+
+## Documentation Architecture & Governance (Tier B)
+
+This project strictly adheres to the `isec-iagen-dev` **Tier B** documentation model.
+Documentation is organized around 5 canonical pillars plus a master index. Ephemeral or
+transient plans must never replace or contradict living canonical documentation.
+
+### The 5 Canonical Documentation Pillars
+
+1. **`docs/spec.md` — The WHAT (Specifications & Invariants)**
+   - Functional requirements, CLI options, public API contracts, and domain invariants.
+   - Ground truth for expected behaviors, acceptance criteria, and operational capabilities.
+
+2. **`docs/design.md` — The HOW (Architecture & Technical Design)**
+   - System architecture, component relationships, data flow diagrams (Mermaid), and module design.
+   - Hardware requirements, performance profiles, memory boundaries, and dependency interactions.
+
+3. **`docs/adr/` — The WHY (Architectural Decision Records)**
+   - Format: `docs/adr/NNNN-<slug>.md` with status (`Accepted`, `Superseded`, `Proposed`), context, decision, and consequences.
+   - Records non-trivial trade-offs, model selections, framework choices, and architectural pivots.
+   - Master ADR index maintained in `docs/README.md`.
+
+4. **`docs/runbook.md` — Operations & Developer Recipes**
+   - Practical step-by-step guides: setup, hardware prerequisites, execution flows, benchmarking recipes, voice profile enrollment, and common troubleshooting tips.
+
+5. **`docs/codemap.md` — The WHERE (Codebase Map & Module Index)**
+   - Navigation guide: file layout, module responsibilities, core functions, test suites, and key symbols.
+   - **Mandatory maintenance rule:** Whenever files or modules are added, removed, or refactored, `docs/codemap.md` MUST be updated in the same change set.
+
+### Master Documentation Index (`docs/README.md`)
+
+- `docs/README.md` is the single entry point for all project documentation.
+- Must link to `spec.md`, `design.md`, `codemap.md`, `runbook.md`, and every active ADR in `docs/adr/`.
+- Relative links must always remain valid. Broken links or unindexed ADRs are lint-level documentation bugs.
+
+### Living Docs vs. Ephemeral Plans (No Confusing Transient Docs)
+
+- **Transient execution artifacts:** Implementation plans (e.g. from `superpowers:writing-plans`) are scratch execution scaffolding only. Historical plans belong in `docs/archive/` and must carry clear deprecation notices.
+- **Single Source of Truth:** Never treat an implementation plan as the living specification. When code is implemented or refactored, the living documentation (`spec.md`, `design.md`, `codemap.md`, `runbook.md`, `adr/`) MUST be updated to reflect current disk and architecture reality.
+- **Consolidation Gate:** After executing any non-trivial plan, consolidate decisions and changes into canonical docs and refresh `.agents/last-docs-consolidate`.
 
 ## Confidence Gate & Pushback
 

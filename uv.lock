@@ -15,7 +15,7 @@ resolution-markers = [
 
 [[package]]
 name = "a2ts"
-version = "0.1.0"
+version = "0.2.0.dev1"
 source = { editable = "." }
 dependencies = [
     { name = "faster-whisper" },
@@ -29,6 +29,7 @@ dependencies = [
     { name = "soundfile" },
     { name = "speechbrain" },
     { name = "tiktoken" },
+    { name = "transformers" },
     { name = "typer" },
 ]
 
@@ -65,7 +66,8 @@ requires-dist = [
     { name = "speechbrain", specifier = ">=1.1.1" },
     { name = "tiktoken", specifier = ">=0.9.0" },
     { name = "torch", marker = "extra == 'voxtral'", specifier = ">=2.5.0" },
-    { name = "transformers", marker = "extra == 'voxtral'", specifier = ">=4.54.0" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers" },
+    { name = "transformers", marker = "extra == 'voxtral'", git = "https://github.com/huggingface/transformers" },
     { name = "typer", specifier = ">=0.15.0" },
 ]
 provides-extras = ["voxtral"]
@@ -2555,8 +2557,8 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.17.0"
-source = { registry = "https://pypi.org/simple" }
+version = "5.18.0.dev0"
+source = { git = "https://github.com/huggingface/transformers#f339035b986aaf719bc6f5ea92342f73c498cb0e" }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "numpy" },
@@ -2567,10 +2569,6 @@ dependencies = [
     { name = "tokenizers" },
     { name = "tqdm" },
     { name = "typer" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/9e/750649904a065007a838981785b2bd8d9ff26154c6c341ac67d0b7f82c68/transformers-5.17.0.tar.gz", hash = "sha256:a153be279169b55b92d8000bf4af294aed684503d091cca7804da2dd8a9de000", size = 9817878, upload-time = "2026-09-09T15:39:56.886Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/d0/c502b60d684adbd98a8dc7d5bb866842772b816ac4354e4608be240041ae/transformers-5.17.0-py3-none-any.whl", hash = "sha256:78ec1ce21579b38dfb83950a0658cd119f87212a2fcfdff478096ce9d6c03801", size = 12295140, upload-time = "2026-09-09T15:39:53.746Z" },
 ]
 
 [[package]]
