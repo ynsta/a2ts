@@ -24,6 +24,15 @@ def test_compute_file_hash(tmp_path: Path) -> None:
     assert h1 == h2
 
 
+def test_compute_file_hash_diff_tails(tmp_path: Path) -> None:
+    f1 = tmp_path / "f1.bin"
+    f2 = tmp_path / "f2.bin"
+    prefix = b"X" * 65536
+    f1.write_bytes(prefix + b"TAIL_1")
+    f2.write_bytes(prefix + b"TAIL_2")
+    assert compute_file_hash(f1) != compute_file_hash(f2)
+
+
 @patch("subprocess.run")
 def test_probe_media(mock_run: MagicMock, tmp_path: Path) -> None:
     test_file = tmp_path / "test.mkv"

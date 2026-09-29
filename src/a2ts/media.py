@@ -7,13 +7,12 @@ from pathlib import Path
 from typing import Any, cast
 
 
-def compute_file_hash(media_path: Path) -> str:
-    """Compute 16-character SHA-256 digest of media file header/size."""
+def compute_file_hash(media_path: Path, chunk_size: int = 65536) -> str:
+    """Compute 16-character SHA-256 digest of entire media file via streaming chunks."""
     hasher = hashlib.sha256()
-    size = media_path.stat().st_size
-    hasher.update(str(size).encode("utf-8"))
     with open(media_path, "rb") as f:
-        hasher.update(f.read(65536))
+        while chunk := f.read(chunk_size):
+            hasher.update(chunk)
     return hasher.hexdigest()[:16]
 
 

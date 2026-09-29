@@ -53,3 +53,9 @@ recordings/
 transcripts/
 scratch/
 *.raw.md
+transcript.md
+/[0-9][0-9][0-9][0-9]-*
+
+# Local context notes & voice profile caches (keep only example files like speakers.txt)
+contexte/*.md
+contexte/*.json
