@@ -86,6 +86,7 @@ class VoiceProfile(BaseModel):
     speaker_name: str
     centroid: list[float]
     sample_count: int = 1
+    sample_ids: list[str] = Field(default_factory=list)
 
 
 class VoiceProfilesDatabase(BaseModel):

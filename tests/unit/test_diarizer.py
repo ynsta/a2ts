@@ -6,8 +6,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import torch
 
-from a2ts.diarizer import diarize_segments
-from a2ts.models import RawSegment
+from a2ts.diarizer import (
+    diarize_nemotron,
+    diarize_segments,
+    extract_embeddings_for_turns,
+)
+from a2ts.models import RawSegment, SpeakerTurn
 
 
 def test_diarize_segments_empty() -> None:
@@ -280,6 +284,32 @@ def test_voice_profiles_ignores_unmapped_generic_speakers() -> None:
     assert len(db.speakers) == 0
 
 
+def test_voice_profiles_idempotent_enrollment() -> None:
+    from a2ts.diarizer import compute_voice_profiles
+    from a2ts.models import SpeakerTurn
+
+    embeddings = np.array([[1.0, 0.0], [0.8, 0.6]], dtype=np.float32)
+    valid_indices = [0, 1]
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=1.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.0, end=3.0, cluster_id="SPEAKER_00"),
+    ]
+    mapping = {"SPEAKER_00": "Brakk"}
+
+    db1 = compute_voice_profiles(
+        embeddings, valid_indices, turns, mapping, session_id="session1"
+    )
+    assert db1.speakers["Brakk"].sample_count == 2
+    c1 = db1.speakers["Brakk"].centroid.copy()
+
+    # Re-enrolling the exact same session turns must NOT double-count samples or drift centroid
+    db2 = compute_voice_profiles(
+        embeddings, valid_indices, turns, mapping, existing_db=db1, session_id="session1"
+    )
+    assert db2.speakers["Brakk"].sample_count == 2
+    assert np.allclose(db2.speakers["Brakk"].centroid, c1)
+
+
 def test_load_voice_profiles_invalid_or_missing(tmp_path: Path) -> None:
     from a2ts.diarizer import load_voice_profiles
 
@@ -400,3 +430,160 @@ def test_propagate_speaker_labels() -> None:
     assert mapping.turn_overrides[2] == "Brakk"
     # turn 4 was trailing unassigned -> propagated from turn 3 (Dorsa)
     assert mapping.turn_overrides[4] == "Dorsa"
+
+
+@patch("a2ts.diarizer.sf.read")
+@patch("a2ts.diarizer.get_nemotron_model")
+def test_diarize_nemotron_success(
+    mock_get_model: MagicMock, mock_sf_read: MagicMock, tmp_path: Path
+) -> None:
+    cache_file = tmp_path / "diar_cache.json"
+    dummy_audio = np.zeros(16000 * 5, dtype=np.float32)
+    mock_sf_read.return_value = (dummy_audio, 16000)
+
+    mock_model = MagicMock()
+    mock_processor = MagicMock()
+    mock_processor.feature_extractor.sampling_rate = 16000
+    mock_get_model.return_value = (mock_model, mock_processor)
+
+    mock_inputs = MagicMock()
+    mock_inputs.attention_mask = MagicMock()
+    mock_processor.return_value.to.return_value = mock_inputs
+
+    mock_logits = MagicMock()
+    mock_model.return_value.logits = mock_logits
+
+    mock_processor.extract_speaker_dict.return_value = [
+        [
+            {"Speaker": 0, "Start": 0.0, "End": 2.0},
+            {"Speaker": 1, "Start": 2.2, "End": 4.5},
+        ]
+    ]
+
+    turns = diarize_nemotron(Path("dummy.wav"), device="cuda", cache_path=cache_file)
+    assert len(turns) == 2
+    assert turns[0].cluster_id == "SPEAKER_00"
+    assert turns[0].start == 0.0
+    assert turns[0].end == 2.0
+    assert turns[1].cluster_id == "SPEAKER_01"
+    assert turns[1].start == 2.2
+    assert turns[1].end == 4.5
+    assert cache_file.is_file()
+
+    # Second call should load from cache without calling model
+    mock_get_model.reset_mock()
+    cached_turns = diarize_nemotron(Path("dummy.wav"), device="cuda", cache_path=cache_file)
+    assert len(cached_turns) == 2
+    assert cached_turns[0].cluster_id == "SPEAKER_00"
+    mock_get_model.assert_not_called()
+
+
+@patch("a2ts.diarizer.diarize_nemotron")
+def test_diarize_segments_engine_nemotron(mock_nemotron: MagicMock) -> None:
+    mock_nemotron.return_value = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+    ]
+    segments = [RawSegment(id=0, start=0.0, end=2.0, text="hello")]
+    turns = diarize_segments(Path("dummy.wav"), segments, engine="nemotron")
+    assert len(turns) == 1
+    assert turns[0].cluster_id == "SPEAKER_00"
+    mock_nemotron.assert_called_once()
+
+
+@patch("a2ts.diarizer.sf.read")
+@patch("a2ts.diarizer.get_embedding_model")
+def test_diarize_segments_engine_ecapa(
+    mock_get_model: MagicMock, mock_sf_read: MagicMock
+) -> None:
+    dummy_audio = np.zeros(16000 * 5, dtype=np.float32)
+    mock_sf_read.return_value = (dummy_audio, 16000)
+    mock_classifier = MagicMock()
+    mock_classifier.encode_batch.return_value = MagicMock(
+        squeeze=lambda: MagicMock(cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0])))
+    )
+    mock_get_model.return_value = mock_classifier
+
+    segments = [RawSegment(id=0, start=0.0, end=2.0, text="hello")]
+    turns = diarize_segments(Path("dummy.wav"), segments, engine="ecapa")
+    assert len(turns) == 1
+    assert turns[0].cluster_id == "SPEAKER_00"
+
+
+@patch("a2ts.diarizer.diarize_nemotron")
+@patch("a2ts.diarizer.extract_embeddings")
+@patch("torch.cuda.is_available", return_value=True)
+def test_diarize_segments_engine_auto_cuda(
+    mock_cuda: MagicMock, mock_extract: MagicMock, mock_nemotron: MagicMock
+) -> None:
+    mock_nemotron.return_value = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+    ]
+    segments = [RawSegment(id=0, start=0.0, end=2.0, text="hello")]
+    turns = diarize_segments(Path("dummy.wav"), segments, engine="auto", device="cuda")
+    assert len(turns) == 1
+    mock_nemotron.assert_called_once()
+    mock_extract.assert_not_called()
+
+
+@patch("a2ts.diarizer.diarize_nemotron", side_effect=RuntimeError("Nemotron failure"))
+@patch("a2ts.diarizer.sf.read")
+@patch("a2ts.diarizer.get_embedding_model")
+@patch("torch.cuda.is_available", return_value=True)
+def test_diarize_segments_engine_auto_fallback(
+    mock_cuda: MagicMock,
+    mock_get_model: MagicMock,
+    mock_sf_read: MagicMock,
+    mock_nemotron: MagicMock,
+) -> None:
+    dummy_audio = np.zeros(16000 * 5, dtype=np.float32)
+    mock_sf_read.return_value = (dummy_audio, 16000)
+    mock_classifier = MagicMock()
+    mock_classifier.encode_batch.return_value = MagicMock(
+        squeeze=lambda: MagicMock(cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0])))
+    )
+    mock_get_model.return_value = mock_classifier
+
+    segments = [
+        RawSegment(id=0, start=0.0, end=2.0, text="hello"),
+        RawSegment(id=1, start=2.5, end=4.0, text="world"),
+    ]
+    turns = diarize_segments(Path("dummy.wav"), segments, engine="auto", device="cuda")
+    assert len(turns) == 2
+    mock_nemotron.assert_called_once()
+    mock_get_model.assert_called_once()
+
+
+@patch("a2ts.diarizer.sf.read")
+@patch("a2ts.diarizer.get_embedding_model")
+def test_extract_embeddings_for_turns(
+    mock_get_model: MagicMock, mock_sf_read: MagicMock, tmp_path: Path
+) -> None:
+    dummy_audio = np.zeros(16000 * 10, dtype=np.float32)
+    mock_sf_read.return_value = (dummy_audio, 16000)
+
+    emb = np.array([3.0, 4.0], dtype=np.float32)
+    mock_classifier = MagicMock()
+    mock_classifier.encode_batch.return_value = MagicMock(
+        squeeze=lambda: MagicMock(cpu=lambda: MagicMock(numpy=lambda: emb))
+    )
+    mock_get_model.return_value = mock_classifier
+
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.0, end=2.05, cluster_id="SPEAKER_01"),  # too short (<0.15s)
+        SpeakerTurn(id=2, start=3.0, end=5.0, cluster_id="SPEAKER_00"),
+    ]
+
+    cache_prefix = tmp_path / "cache_prefix"
+    emb_matrix, valid_indices = extract_embeddings_for_turns(
+        Path("dummy.wav"), turns, device="cpu", cache_prefix=cache_prefix
+    )
+
+    assert len(valid_indices) == 2
+    assert valid_indices == [0, 2]
+    assert emb_matrix.shape == (2, 2)
+    # Norm check: [3, 4] normalized is [0.6, 0.8]
+    assert np.allclose(np.linalg.norm(emb_matrix, axis=1), 1.0)
+    assert Path(f"{cache_prefix}_embeddings.npy").is_file()
+    assert Path(f"{cache_prefix}_indices.json").is_file()
+

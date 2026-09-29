@@ -457,8 +457,11 @@ def run(
 
     # Auto-enroll / update voice profiles
     if diarize:
-        embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
-        indices_json = diarization_dir / f"{file_hash}_indices.json"
+        embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
+        indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
+        if not (embeddings_npy.is_file() and indices_json.is_file()):
+            embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
+            indices_json = diarization_dir / f"{file_hash}_indices.json"
         has_named_speakers = any(
             not v.startswith("SPEAKER_") for v in mapping.cluster_defaults.values()
         ) or any(
@@ -476,6 +479,11 @@ def run(
                 device=device,
                 cache_prefix=diarization_dir / file_hash,
             )
+            embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
+            indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
+            if not (embeddings_npy.is_file() and indices_json.is_file()):
+                embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
+                indices_json = diarization_dir / f"{file_hash}_indices.json"
         if embeddings_npy.is_file() and indices_json.is_file():
             try:
                 embeddings = np.load(embeddings_npy)
@@ -496,6 +504,7 @@ def run(
             turns_for_profiles,
             mapping,
             existing_db=loaded_db,
+            session_id=file_hash,
         )
         save_voice_profiles(db, voice_profiles)
         console.print(
@@ -808,6 +817,7 @@ def review(
                 turns_for_profiles,
                 mapping,
                 existing_db=loaded_db,
+                session_id=media_hash or session_path.stem,
             )
             save_voice_profiles(db, voice_profiles)
             console.print(

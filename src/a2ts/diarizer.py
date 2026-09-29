@@ -531,14 +531,16 @@ def diarize_segments(
 def compute_voice_profiles(
     embeddings: np.ndarray,
     valid_indices: list[int],
-    turns: list[SpeakerTurn | AlignedTurn],
+    turns: Sequence[SpeakerTurn | AlignedTurn],
     speakers_mapping: SpeakersMapping | dict[str, str],
     existing_db: VoiceProfilesDatabase | None = None,
+    session_id: str = "",
 ) -> VoiceProfilesDatabase:
     """Compute normalized centroid voice profiles from segment embeddings and labeled turns.
 
     Ignores generic unmapped speaker IDs starting with 'SPEAKER_'.
     If existing_db is provided, combines existing speaker centroids using sample-count weighted averaging.
+    Idempotent: samples with already enrolled sample_ids are ignored.
     """
     profiles: dict[str, VoiceProfile] = {}
     if existing_db is not None:
@@ -556,7 +558,7 @@ def compute_voice_profiles(
         tid = getattr(turn, "turn_id", getattr(turn, "id", idx))
         turn_by_id[tid] = turn
 
-    speaker_embs: dict[str, list[np.ndarray]] = {}
+    speaker_samples: dict[str, list[tuple[np.ndarray, str]]] = {}
 
     for i, valid_idx in enumerate(valid_indices):
         if i >= len(embeddings):
@@ -607,15 +609,28 @@ def compute_voice_profiles(
         if not resolved_spk or resolved_spk.startswith("SPEAKER_"):
             continue
 
-        speaker_embs.setdefault(resolved_spk, []).append(emb)
+        sample_id = (
+            f"{session_id}:{turn_id}:{matched_turn.start:.2f}"
+            if session_id
+            else f"turn:{turn_id}:{matched_turn.start:.2f}"
+        )
+        speaker_samples.setdefault(resolved_spk, []).append((emb, sample_id))
 
-    for speaker, embs in speaker_embs.items():
-        new_arr = np.array(embs, dtype=np.float32)
-        n_new = len(embs)
-        mu_new = np.mean(new_arr, axis=0)
-
+    for speaker, samples in speaker_samples.items():
         if speaker in profiles:
             old_prof = profiles[speaker]
+            existing_ids = set(old_prof.sample_ids)
+            new_samples = [s for s in samples if s[1] not in existing_ids]
+            if not new_samples:
+                # All samples already enrolled; skip to preserve idempotency
+                continue
+
+            new_embs = [s[0] for s in new_samples]
+            new_ids = [s[1] for s in new_samples]
+            new_arr = np.array(new_embs, dtype=np.float32)
+            n_new = len(new_embs)
+            mu_new = np.mean(new_arr, axis=0)
+
             n_old = old_prof.sample_count
             mu_old = np.array(old_prof.centroid, dtype=np.float32)
             mu_comb = (n_old * mu_old + n_new * mu_new) / (n_old + n_new)
@@ -626,15 +641,21 @@ def compute_voice_profiles(
                 speaker_name=speaker,
                 centroid=[float(x) for x in mu_comb],
                 sample_count=n_old + n_new,
+                sample_ids=old_prof.sample_ids + new_ids,
             )
         else:
+            new_embs = [s[0] for s in samples]
+            new_ids = [s[1] for s in samples]
+            new_arr = np.array(new_embs, dtype=np.float32)
+            mu_new = np.mean(new_arr, axis=0)
             norm = float(np.linalg.norm(mu_new))
             if norm > 0:
                 mu_new = mu_new / norm
             profiles[speaker] = VoiceProfile(
                 speaker_name=speaker,
                 centroid=[float(x) for x in mu_new],
-                sample_count=n_new,
+                sample_count=len(new_embs),
+                sample_ids=new_ids,
             )
 
     return VoiceProfilesDatabase(
