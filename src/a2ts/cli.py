@@ -17,16 +17,25 @@ from a2ts.diarizer import (
     classify_clusters_to_profiles,
     compute_voice_profiles,
     diarize_segments,
+    extract_embeddings_for_turns,
     load_voice_profiles,
     propagate_speaker_labels,
     save_voice_profiles,
 )
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
+from a2ts.cache import (
+    atomic_write_text,
+    compute_prompt_hash,
+    load_transcript_cache,
+    save_transcript_cache,
+)
 from a2ts.models import (
     AlignedTurn,
+    DiarizationCacheProvenance,
     RawSegment,
     SessionMetadata,
     SpeakerTurn,
+    TranscriptCacheProvenance,
     VoiceProfilesDatabase,
 )
 from a2ts.refiner import refine_transcript_markdown
@@ -123,6 +132,13 @@ def run(
     diarize: Annotated[
         bool, typer.Option(help="Enable acoustic speaker diarization")
     ] = True,
+    diarizer_engine: Annotated[
+        str,
+        typer.Option(
+            "--diarizer-engine",
+            help="Acoustic diarization engine: 'auto' (Nemotron-3 on CUDA, ECAPA on CPU), 'nemotron', or 'ecapa'",
+        ),
+    ] = "auto",
     cluster_threshold: Annotated[
         float,
         typer.Option(
@@ -209,6 +225,10 @@ def run(
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Force re-transcription and re-diarization ignoring existing cache"),
+    ] = False,
     output: Annotated[
         Path, typer.Option(help="Output markdown transcript path")
     ] = Path("transcript.md"),
@@ -239,12 +259,25 @@ def run(
     transcripts_dir.mkdir(parents=True, exist_ok=True)
     transcript_cache = transcripts_dir / f"{file_hash}_{engine}.json"
 
-    if transcript_cache.is_file():
+    resolved_model_name = model_name or (
+        "large-v3" if engine == "whisper" else "mistralai/Voxtral-Mini-3B-2507"
+    )
+    prompt_hash = compute_prompt_hash(prompt)
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash=file_hash,
+        engine=engine,
+        model_name=resolved_model_name,
+        compute_type=compute_type,
+        prompt_hash=prompt_hash,
+    )
+
+    cached_segments = load_transcript_cache(transcript_cache, trans_prov, force=force)
+    if cached_segments is not None:
         console.print(
             f"[bold cyan]Step 3: Loading cached raw transcription from {transcript_cache}...[/bold cyan]"
         )
-        cached_data = json.loads(transcript_cache.read_text(encoding="utf-8"))
-        raw_segments = [RawSegment.model_validate(seg) for seg in cached_data]
+        raw_segments = cached_segments
     else:
         console.print(f"[bold]Step 3: Transcribing with engine '{engine}'...[/bold]")
         engine_kwargs: dict[str, Any] = {}
@@ -258,18 +291,21 @@ def run(
                 engine_kwargs["model_name"] = model_name
         transcriber = get_engine(engine, **engine_kwargs)
         raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
-        transcript_cache.write_text(
-            json.dumps(
-                [s.model_dump() for s in raw_segments], indent=2, ensure_ascii=False
-            ),
-            encoding="utf-8",
-        )
+        save_transcript_cache(transcript_cache, trans_prov, raw_segments)
 
     # 4. Acoustic Diarization & Temporal slicing
     console.print("[bold]Step 4: Acoustic speaker diarization & alignment...[/bold]")
     diarization_dir = cache_dir / "diarization"
     diarization_dir.mkdir(parents=True, exist_ok=True)
     diar_cache = diarization_dir / f"{file_hash}.json"
+
+    diar_prov = DiarizationCacheProvenance(
+        media_hash=file_hash,
+        engine=diarizer_engine,
+        cluster_threshold=cluster_threshold,
+        num_speakers=num_speakers,
+        device=device,
+    )
 
     if diarize:
         speaker_turns = diarize_segments(
@@ -278,8 +314,11 @@ def run(
             num_speakers=num_speakers,
             distance_threshold=cluster_threshold,
             device=device,
+            engine=diarizer_engine,
             cache_path=diar_cache,
             embeddings_cache_prefix=diarization_dir / file_hash,
+            provenance=diar_prov,
+            force=force,
         )
     else:
         speaker_turns = [
@@ -297,11 +336,11 @@ def run(
 
     # Cache aligned turns for review and split subcommands
     turns_path = cache_dir / "turns.json"
-    turns_path.write_text(
+    atomic_write_text(
+        turns_path,
         json.dumps(
             [t.model_dump() for t in aligned_turns], indent=2, ensure_ascii=False
         ),
-        encoding="utf-8",
     )
 
     # 5. Interactive speaker review & voice profile matching
@@ -309,10 +348,23 @@ def run(
     mapping = load_speakers_mapping(mapping_path)
 
     loaded_db: VoiceProfilesDatabase | None = None
-    if voice_profiles.is_file():
+    if voice_profiles.is_file() and diarize:
         loaded_db = load_voice_profiles(voice_profiles)
         embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
         indices_json = diarization_dir / f"{file_hash}_indices.json"
+        if (
+            loaded_db
+            and loaded_db.speakers
+            and (not embeddings_npy.is_file() or not indices_json.is_file())
+            and speaker_turns
+            and audio_path.is_file()
+        ):
+            extract_embeddings_for_turns(
+                audio_path=audio_path,
+                turns=speaker_turns,
+                device=device,
+                cache_prefix=diarization_dir / file_hash,
+            )
         if (
             loaded_db
             and loaded_db.speakers
@@ -396,6 +448,23 @@ def run(
     if diarize:
         embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
         indices_json = diarization_dir / f"{file_hash}_indices.json"
+        has_named_speakers = any(
+            not v.startswith("SPEAKER_") for v in mapping.cluster_defaults.values()
+        ) or any(
+            not v.startswith("SPEAKER_") for v in mapping.turn_overrides.values()
+        )
+        if (
+            (not embeddings_npy.is_file() or not indices_json.is_file())
+            and speaker_turns
+            and has_named_speakers
+            and audio_path.is_file()
+        ):
+            extract_embeddings_for_turns(
+                audio_path=audio_path,
+                turns=speaker_turns,
+                device=device,
+                cache_prefix=diarization_dir / file_hash,
+            )
         if embeddings_npy.is_file() and indices_json.is_file():
             try:
                 embeddings = np.load(embeddings_npy)

@@ -22,8 +22,14 @@ from rich.progress import (
 )
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
+from a2ts.cache import (
+    atomic_write_text,
+    load_diarization_cache,
+    save_diarization_cache,
+)
 from a2ts.models import (
     AlignedTurn,
+    DiarizationCacheProvenance,
     RawSegment,
     SpeakersMapping,
     SpeakerTurn,
@@ -34,6 +40,115 @@ from a2ts.models import (
 logger = logging.getLogger(__name__)
 console = Console()
 _CLASSIFIER: Any = None
+_NEMOTRON_MODEL: Any = None
+_NEMOTRON_PROCESSOR: Any = None
+
+
+def get_nemotron_model(device: str = "cuda") -> tuple[Any, Any]:
+    """Load and cache the NVIDIA Nemotron-3 Diarization model and processor."""
+    global _NEMOTRON_MODEL, _NEMOTRON_PROCESSOR
+    if _NEMOTRON_MODEL is None or _NEMOTRON_PROCESSOR is None:
+        from transformers import (  # type: ignore[import-untyped]
+            AutoModelForAudioFrameClassification,
+            AutoProcessor,
+        )
+
+        model_id = "nvidia/Nemotron-3-Diarization"
+        with console.status(
+            f"[bold cyan]Loading {model_id} model...[/bold cyan]",
+            spinner="dots",
+        ):
+            processor = AutoProcessor.from_pretrained(model_id)
+            device_str = (
+                "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+            )
+            dtype = torch.float16 if device_str == "cuda" else torch.float32
+            model = AutoModelForAudioFrameClassification.from_pretrained(
+                model_id,
+                dtype=dtype,
+                device_map=device_str,
+            )
+            _NEMOTRON_PROCESSOR = processor
+            _NEMOTRON_MODEL = model
+        console.print("[green]✓ Nemotron-3 Diarization model loaded.[/green]")
+    return _NEMOTRON_MODEL, _NEMOTRON_PROCESSOR
+
+
+def diarize_nemotron(
+    audio_path: Path,
+    device: str = "cuda",
+    cache_path: Path | None = None,
+    provenance: DiarizationCacheProvenance | None = None,
+    force: bool = False,
+) -> list[SpeakerTurn]:
+    """Perform acoustic speaker diarization using NVIDIA Nemotron-3 Diarization."""
+    if cache_path:
+        if provenance is not None:
+            cached_turns = load_diarization_cache(cache_path, provenance, force=force)
+            if cached_turns is not None:
+                console.print(
+                    f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+                )
+                return cached_turns
+        elif not force and cache_path.is_file():
+            console.print(
+                f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+            )
+            try:
+                cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                return [SpeakerTurn.model_validate(item) for item in cached_data]
+            except (json.JSONDecodeError, OSError, ValueError) as exc:
+                logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
+
+    audio, sr = sf.read(str(audio_path), dtype="float32")
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+
+    model, processor = get_nemotron_model(device=device)
+    target_sr = getattr(processor.feature_extractor, "sampling_rate", 16000)
+    if sr != target_sr:
+        import librosa  # type: ignore[import-untyped]
+
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+        sr = target_sr
+
+    inputs = processor(audio, sampling_rate=sr).to(model.device, dtype=model.dtype)
+    with torch.inference_mode():
+        logits = model(**inputs).logits
+
+    segments = processor.extract_speaker_dict(logits, inputs.attention_mask)[0]
+
+    speaker_turns: list[SpeakerTurn] = []
+    for i, seg in enumerate(segments):
+        spk_idx = int(seg["Speaker"])
+        speaker_turns.append(
+            SpeakerTurn(
+                id=i,
+                start=float(seg["Start"]),
+                end=float(seg["End"]),
+                cluster_id=f"SPEAKER_{spk_idx:02d}",
+            )
+        )
+
+    num_detected = len({t.cluster_id for t in speaker_turns})
+    console.print(
+        f"[green]✓ Nemotron-3 Diarization completed: detected {num_detected} distinct speakers ({len(speaker_turns)} turns).[/green]\n"
+    )
+
+    if cache_path:
+        if provenance is not None:
+            save_diarization_cache(cache_path, provenance, speaker_turns)
+        else:
+            atomic_write_text(
+                cache_path,
+                json.dumps(
+                    [t.model_dump() for t in speaker_turns],
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+
+    return speaker_turns
 
 
 def get_embedding_model(device: str = "cuda") -> Any:
@@ -146,29 +261,152 @@ def extract_embeddings(
     return emb_matrix, valid_indices
 
 
+def extract_embeddings_for_turns(
+    audio_path: Path,
+    turns: list[SpeakerTurn],
+    device: str = "cuda",
+    cache_prefix: Path | None = None,
+) -> tuple[np.ndarray, list[int]]:
+    """Extract and cache speaker embeddings for speaker turns using ECAPA-TDNN."""
+    if cache_prefix is not None:
+        emb_file = Path(f"{cache_prefix}_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_indices.json")
+        if emb_file.is_file() and idx_file.is_file():
+            console.print(
+                f"[bold cyan]Loading cached turn embeddings from {cache_prefix}...[/bold cyan]"
+            )
+            try:
+                emb_matrix = np.load(emb_file)
+                cached_indices = [
+                    int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+                ]
+                return emb_matrix, cached_indices
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.debug(
+                    "Failed to read turn embedding cache %s: %s", cache_prefix, exc
+                )
+
+    if not turns:
+        return np.empty((0, 0), dtype=np.float32), []
+
+    audio, sr = sf.read(str(audio_path), dtype="float32")
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+
+    classifier = get_embedding_model(device=device)
+
+    embeddings: list[np.ndarray] = []
+    valid_indices: list[int] = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]Embedding speaker turns (ECAPA-TDNN)[/bold blue]"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        task = progress.add_task("turn_embedding", total=len(turns))
+
+        for idx, turn in enumerate(turns):
+            start_idx = max(0, int(turn.start * sr))
+            end_idx = min(len(audio), int(turn.end * sr))
+
+            # Need at least ~0.15s (2400 samples at 16kHz) for meaningful embedding
+            if end_idx - start_idx >= 2400:
+                clip_tensor = torch.tensor(
+                    audio[start_idx:end_idx], dtype=torch.float32
+                ).unsqueeze(0)
+                if device == "cuda" and torch.cuda.is_available():
+                    clip_tensor = clip_tensor.cuda()
+
+                with torch.no_grad():
+                    emb = classifier.encode_batch(clip_tensor).squeeze().cpu().numpy()
+                embeddings.append(emb)
+                valid_indices.append(idx)
+            progress.update(task, advance=1)
+
+    if not embeddings:
+        return np.empty((0, 0), dtype=np.float32), []
+
+    emb_matrix = np.array(embeddings, dtype=np.float32)
+    norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    emb_matrix = emb_matrix / norms
+
+    if cache_prefix is not None:
+        emb_file = Path(f"{cache_prefix}_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_indices.json")
+        emb_file.parent.mkdir(parents=True, exist_ok=True)
+        np.save(emb_file, emb_matrix)
+        idx_file.write_text(
+            json.dumps(valid_indices, indent=2),
+            encoding="utf-8",
+        )
+
+    return emb_matrix, valid_indices
+
+
 def diarize_segments(
     audio_path: Path,
     segments: list[RawSegment],
     num_speakers: int | None = None,
     distance_threshold: float = 0.60,
     device: str = "cuda",
+    engine: str = "auto",
     cache_path: Path | None = None,
     embeddings_cache_prefix: Path | None = None,
+    provenance: DiarizationCacheProvenance | None = None,
+    force: bool = False,
 ) -> list[SpeakerTurn]:
     """Cluster raw speech segments into acoustic speaker turns."""
     if not segments:
         return []
 
     # Check cache
-    if cache_path and cache_path.is_file():
-        console.print(
-            f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+    if cache_path:
+        if provenance is not None:
+            cached_turns = load_diarization_cache(cache_path, provenance, force=force)
+            if cached_turns is not None:
+                console.print(
+                    f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+                )
+                return cached_turns
+        elif not force and cache_path.is_file():
+            console.print(
+                f"[bold cyan]Loading cached diarization from {cache_path}...[/bold cyan]"
+            )
+            try:
+                cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                return [SpeakerTurn.model_validate(item) for item in cached_data]
+            except (json.JSONDecodeError, OSError, ValueError) as exc:
+                logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
+
+    if engine == "nemotron":
+        return diarize_nemotron(
+            audio_path=audio_path,
+            device=device,
+            cache_path=cache_path,
+            provenance=provenance,
+            force=force,
         )
+
+    if engine == "auto" and device == "cuda" and torch.cuda.is_available():
         try:
-            cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
-            return [SpeakerTurn.model_validate(item) for item in cached_data]
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
+            return diarize_nemotron(
+                audio_path=audio_path,
+                device=device,
+                cache_path=cache_path,
+                provenance=provenance,
+                force=force,
+            )
+        except (RuntimeError, ValueError, OSError, ImportError) as exc:
+            logger.warning(
+                "Nemotron-3 diarization failed (%s), falling back to SpeechBrain ECAPA.",
+                exc,
+            )
 
     if len(segments) == 1:
         single_turn = [
@@ -259,15 +497,17 @@ def diarize_segments(
     )
 
     if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(
-                [t.model_dump() for t in speaker_turns],
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        if provenance is not None:
+            save_diarization_cache(cache_path, provenance, speaker_turns)
+        else:
+            atomic_write_text(
+                cache_path,
+                json.dumps(
+                    [t.model_dump() for t in speaker_turns],
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
 
     return speaker_turns
 

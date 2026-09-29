@@ -94,3 +94,41 @@ class VoiceProfilesDatabase(BaseModel):
     version: int = 1
     updated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     speakers: dict[str, VoiceProfile] = Field(default_factory=dict)
+
+
+class TranscriptCacheProvenance(BaseModel):
+    """Provenance envelope tracking all settings affecting raw transcription."""
+
+    version: int = 1
+    media_hash: str
+    engine: str
+    model_name: str
+    compute_type: str
+    prompt_hash: str = "no_prompt"
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+class TranscriptCacheFile(BaseModel):
+    """Versioned storage file for raw transcription segments."""
+
+    provenance: TranscriptCacheProvenance
+    segments: list[RawSegment]
+
+
+class DiarizationCacheProvenance(BaseModel):
+    """Provenance envelope tracking all settings affecting acoustic diarization."""
+
+    version: int = 1
+    media_hash: str
+    engine: str
+    cluster_threshold: float
+    num_speakers: int | None = None
+    device: str = "cuda"
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+class DiarizationCacheFile(BaseModel):
+    """Versioned storage file for acoustic diarization speaker turns."""
+
+    provenance: DiarizationCacheProvenance
+    turns: list[SpeakerTurn]

@@ -1,0 +1,160 @@
+from pathlib import Path
+
+from a2ts.cache import (
+    compute_prompt_hash,
+    load_diarization_cache,
+    load_transcript_cache,
+    save_diarization_cache,
+    save_transcript_cache,
+)
+from a2ts.models import (
+    DiarizationCacheProvenance,
+    RawSegment,
+    SpeakerTurn,
+    TranscriptCacheProvenance,
+)
+
+
+def test_compute_prompt_hash() -> None:
+    assert compute_prompt_hash(None) == "no_prompt"
+    h1 = compute_prompt_hash("Brakk MJ Oskel")
+    assert len(h1) == 16
+    h2 = compute_prompt_hash("Brakk MJ Oskel")
+    assert h1 == h2
+    assert h1 != compute_prompt_hash("Different prompt")
+
+
+def test_transcript_cache_save_and_load(tmp_path: Path) -> None:
+    cache_path = tmp_path / "transcripts" / "test.json"
+    prov = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="large-v3",
+        compute_type="float16",
+        prompt_hash="prompt123",
+    )
+    segments = [
+        RawSegment(id=0, start=0.0, end=2.0, text="Hello"),
+        RawSegment(id=1, start=2.5, end=4.0, text="World"),
+    ]
+
+    save_transcript_cache(cache_path, prov, segments)
+    assert cache_path.is_file()
+
+    loaded = load_transcript_cache(cache_path, prov, force=False)
+    assert loaded is not None
+    assert len(loaded) == 2
+    assert loaded[0].text == "Hello"
+    assert loaded[1].text == "World"
+
+
+def test_transcript_cache_invalidation_on_model_or_prompt(tmp_path: Path) -> None:
+    cache_path = tmp_path / "transcripts" / "test.json"
+    prov1 = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="large-v3",
+        compute_type="float16",
+        prompt_hash="prompt123",
+    )
+    segments = [RawSegment(id=0, start=0.0, end=2.0, text="Hello")]
+    save_transcript_cache(cache_path, prov1, segments)
+
+    # Different model
+    prov_diff_model = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="medium",
+        compute_type="float16",
+        prompt_hash="prompt123",
+    )
+    assert load_transcript_cache(cache_path, prov_diff_model) is None
+
+    # Different prompt
+    prov_diff_prompt = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="large-v3",
+        compute_type="float16",
+        prompt_hash="diff_prompt",
+    )
+    assert load_transcript_cache(cache_path, prov_diff_prompt) is None
+
+
+def test_transcript_cache_force_and_corruption(tmp_path: Path) -> None:
+    cache_path = tmp_path / "transcripts" / "test.json"
+    prov = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="large-v3",
+        compute_type="float16",
+        prompt_hash="prompt123",
+    )
+    segments = [RawSegment(id=0, start=0.0, end=2.0, text="Hello")]
+    save_transcript_cache(cache_path, prov, segments)
+
+    # Force bypass
+    assert load_transcript_cache(cache_path, prov, force=True) is None
+
+    # Corrupted JSON
+    cache_path.write_text("{invalid json", encoding="utf-8")
+    assert load_transcript_cache(cache_path, prov, force=False) is None
+
+
+def test_diarization_cache_save_and_load(tmp_path: Path) -> None:
+    cache_path = tmp_path / "diarization" / "test.json"
+    prov = DiarizationCacheProvenance(
+        media_hash="hash123",
+        engine="auto",
+        cluster_threshold=0.60,
+        num_speakers=2,
+        device="cuda",
+    )
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.5, end=4.0, cluster_id="SPEAKER_01"),
+    ]
+
+    save_diarization_cache(cache_path, prov, turns)
+    assert cache_path.is_file()
+
+    loaded = load_diarization_cache(cache_path, prov, force=False)
+    assert loaded is not None
+    assert len(loaded) == 2
+    assert loaded[0].cluster_id == "SPEAKER_00"
+
+
+def test_diarization_cache_invalidation_and_force(tmp_path: Path) -> None:
+    cache_path = tmp_path / "diarization" / "test.json"
+    prov = DiarizationCacheProvenance(
+        media_hash="hash123",
+        engine="auto",
+        cluster_threshold=0.60,
+        num_speakers=2,
+        device="cuda",
+    )
+    turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
+    save_diarization_cache(cache_path, prov, turns)
+
+    # Different threshold
+    prov_diff_thresh = DiarizationCacheProvenance(
+        media_hash="hash123",
+        engine="auto",
+        cluster_threshold=0.40,
+        num_speakers=2,
+        device="cuda",
+    )
+    assert load_diarization_cache(cache_path, prov_diff_thresh) is None
+
+    # Different speaker count
+    prov_diff_speakers = DiarizationCacheProvenance(
+        media_hash="hash123",
+        engine="auto",
+        cluster_threshold=0.60,
+        num_speakers=4,
+        device="cuda",
+    )
+    assert load_diarization_cache(cache_path, prov_diff_speakers) is None
+
+    # Force bypass
+    assert load_diarization_cache(cache_path, prov, force=True) is None
