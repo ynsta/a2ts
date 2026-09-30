@@ -576,8 +576,9 @@ def diarize_segments(
         full_labels[valid_idx] = int(label)
 
     # For any skipped very short segments, propagate adjacent label
+    valid_indices_set = set(valid_indices)
     for i in range(len(segments)):
-        if i not in valid_indices:
+        if i not in valid_indices_set:
             if i > 0:
                 full_labels[i] = full_labels[i - 1]
             elif valid_indices:

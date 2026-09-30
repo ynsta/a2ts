@@ -226,6 +226,8 @@ def compute_track_provenance(
     compute_type: str,
     prompt_hash: str,
     vad_parameters: dict[str, Any] | None = None,
+    vad_filter: bool = True,
+    language: str = "fr",
 ) -> TrackCacheProvenance:
     """Compute provenance metadata for an audio track file."""
     stat = track_path.stat()
@@ -234,7 +236,9 @@ def compute_track_provenance(
         model_name=model_name,
         compute_type=compute_type,
         prompt_hash=prompt_hash,
+        vad_filter=vad_filter,
         vad_parameters=vad_parameters if vad_parameters is not None else {},
+        language=language,
         source_file_size=stat.st_size,
         source_file_mtime=stat.st_mtime,
     )
@@ -253,8 +257,6 @@ def build_craig_prompt(
         for nick in speaker.nicknames:
             if nick:
                 records.append(EntityRecord(name=nick, kind="nickname"))
-        if speaker.discord_username:
-            records.append(EntityRecord(name=speaker.discord_username, kind="username"))
 
     if context_dir is not None and context_dir.is_dir():
         records.extend(scan_context_directory(context_dir))
@@ -284,7 +286,9 @@ def load_track_cache(
             and p.prompt_hash == expected_provenance.prompt_hash
             and p.source_file_size == expected_provenance.source_file_size
             and abs(p.source_file_mtime - expected_provenance.source_file_mtime) < 1e-4
+            and p.vad_filter == expected_provenance.vad_filter
             and p.vad_parameters == expected_provenance.vad_parameters
+            and p.language == expected_provenance.language
         ):
             return cached.segments
         return None
@@ -321,6 +325,9 @@ def transcribe_craig_track(
         str(track_path),
         initial_prompt=initial_prompt,
         word_timestamps=True,
+        vad_filter=provenance.vad_filter,
+        vad_parameters=provenance.vad_parameters,
+        language=provenance.language,
     )
     if isinstance(transcribe_out, tuple):
         segments_gen, _ = transcribe_out
@@ -431,5 +438,9 @@ def merge_craig_tracks_to_turns(
         )
 
     return aligned_turns
+
+
+# Alias for backwards compatibility / shorthand
+transcribe_track = transcribe_craig_track
 
 

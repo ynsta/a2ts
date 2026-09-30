@@ -298,13 +298,13 @@ def test_build_craig_prompt(tmp_path: Path) -> None:
     prompt = build_craig_prompt(speakers)
     assert "Merrow Ashdale" in prompt
     assert "Mimi" in prompt
-    assert "merrow1" in prompt
+    assert "merrow1" not in prompt
     assert "MJ" in prompt
-    assert "tessaro" in prompt
+    assert "tessaro" not in prompt
     assert "Thorin Oakenshield" in prompt
     assert "Thor" in prompt
     assert "Petit" in prompt
-    assert "player3" in prompt
+    assert "player3" not in prompt
 
     # 2. Prompt with context_dir containing lore
     context_dir = tmp_path / "lore"
@@ -480,6 +480,9 @@ def test_transcribe_craig_track_caching(tmp_path: Path) -> None:
         str(track_file),
         initial_prompt="Merrow, MJ",
         word_timestamps=True,
+        vad_filter=True,
+        vad_parameters={},
+        language="fr",
     )
 
     expected_cache_file = cache_dir / "1-merrow1.json"

@@ -173,7 +173,9 @@ class TrackCacheProvenance(BaseModel):
     model_name: str
     compute_type: str
     prompt_hash: str
+    vad_filter: bool = True
     vad_parameters: dict[str, Any] = Field(default_factory=dict)
+    language: str = "fr"
     source_file_size: int
     source_file_mtime: float
 

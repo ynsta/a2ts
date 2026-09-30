@@ -74,6 +74,7 @@ def refine_transcript_markdown(
     raw_markdown: str,
     agy_model: str = "gemini-3.8-flash-low",
     chunk_turns: int = 25,
+    effort: str = "low",
 ) -> str:
     """Refine transcript via local agy CLI with deterministic normalization fallback."""
     normalized = normalize_rpg_phonetics(raw_markdown)
@@ -102,7 +103,7 @@ def refine_transcript_markdown(
         )
 
         timeout = max(30, min(120, len(clean_chunk.split()) // 20))
-        cmd = ["agy", "--model", agy_model, "--effort", "low"]
+        cmd = ["agy", "--model", agy_model, "--effort", effort]
         try:
             proc = subprocess.run(
                 cmd,

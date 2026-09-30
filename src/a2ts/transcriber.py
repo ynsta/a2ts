@@ -24,13 +24,16 @@ console = Console()
 
 
 def ensure_cuda_libs() -> None:
-    """Preload bundled NVIDIA CUDA libraries if available."""
+    """Preload bundled NVIDIA CUDA libraries (cublas and cudnn) if available."""
     for path_entry in sys.path:
         nvidia_dir = Path(path_entry) / "nvidia"
         if nvidia_dir.is_dir():
             for lib_dir in nvidia_dir.glob("*/lib"):
                 if lib_dir.is_dir():
-                    for so_file in sorted(lib_dir.glob("*.so*")):
+                    candidates: list[Path] = []
+                    candidates.extend(lib_dir.glob("libcublas.so*"))
+                    candidates.extend(lib_dir.glob("libcudnn*.so*"))
+                    for so_file in sorted(candidates):
                         try:
                             ctypes.CDLL(str(so_file), mode=ctypes.RTLD_GLOBAL)
                         except (OSError, RuntimeError):

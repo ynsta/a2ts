@@ -1,5 +1,7 @@
 """Time-slice segmentation, cluster splitting, and word-to-speaker alignment."""
 
+from bisect import bisect_left, bisect_right
+
 from a2ts.models import AlignedTurn, RawSegment, SpeakerTurn, WordTimestamp
 
 
@@ -57,6 +59,11 @@ def align_words_to_speaker_turns(
             for seg in segments
         ]
 
+    # Sort turns by start time with stable tie-breaking on turn_id
+    sorted_turns = sorted(turns, key=lambda t: (t.start, t.id))
+    turn_starts = [t.start for t in sorted_turns]
+    max_turn_duration = max((t.end - t.start for t in sorted_turns), default=0.0)
+
     # Flatten all words from segments
     all_words: list[WordTimestamp] = []
     for seg in segments:
@@ -67,25 +74,35 @@ def align_words_to_speaker_turns(
             all_words.append(WordTimestamp(word=seg.text, start=seg.start, end=seg.end))
 
     aligned_turns: list[AlignedTurn] = []
-    words_by_turn: dict[int, list[WordTimestamp]] = {t.id: [] for t in turns}
+    words_by_turn: dict[int, list[WordTimestamp]] = {t.id: [] for t in sorted_turns}
 
     for word in all_words:
         mid_point = (word.start + word.end) / 2.0
-        # Find matching speaker turn
-        matched_turn = None
-        for t in turns:
+
+        # Find nearby candidate overlapping turns using bisect
+        idx = bisect_right(turn_starts, word.start)
+        cand_start = bisect_left(turn_starts, mid_point - max_turn_duration)
+        cand_end = bisect_right(turn_starts, mid_point)
+
+        matched_turn: SpeakerTurn | None = None
+        for i in range(cand_start, cand_end):
+            t = sorted_turns[i]
             if t.start <= mid_point <= t.end:
                 matched_turn = t
                 break
+
         if matched_turn is None:
-            # Match closest turn
+            # Find nearest turn among immediate neighbors in local window O(log N)
+            cand_left = max(0, min(idx - 5, cand_start))
+            cand_right = min(len(sorted_turns), max(idx + 5, cand_end))
             matched_turn = min(
-                turns,
+                sorted_turns[cand_left:cand_right],
                 key=lambda t: min(abs(t.start - mid_point), abs(t.end - mid_point)),
             )
+
         words_by_turn[matched_turn.id].append(word)
 
-    for turn in turns:
+    for turn in sorted_turns:
         turn_words = words_by_turn[turn.id]
         if not turn_words:
             continue

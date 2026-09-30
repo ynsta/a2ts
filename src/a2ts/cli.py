@@ -25,6 +25,7 @@ from a2ts.craig import (
     compute_track_provenance,
     discover_tracks,
     find_speakers_file,
+    load_track_cache,
     merge_craig_tracks_to_turns,
     parse_info_file,
     parse_speakers_file,
@@ -1136,8 +1137,9 @@ def recluster(
         elif seg_id < len(raw_segments):
             full_labels[seg_id] = int(label)
 
+    valid_indices_set = set(valid_indices)
     for i in range(len(raw_segments)):
-        if i not in valid_indices and (raw_segments[i].id not in valid_indices):
+        if i not in valid_indices_set and (raw_segments[i].id not in valid_indices_set):
             if i > 0:
                 full_labels[i] = full_labels[i - 1]
             elif valid_indices:
@@ -1342,20 +1344,27 @@ def craig(
     # 5. Compute prompt hash: compute_prompt_hash(prompt)
     prompt_hash = compute_prompt_hash(prompt)
 
-    # 6. Load whisper engine via get_engine("whisper", model_name=model_name, device=device, compute_type=compute_type)
-    whisper_engine = get_engine(
-        "whisper",
-        model_name=model_name,
-        device=device,
-        compute_type=compute_type,
-    )
-    whisper_model: Any = whisper_engine
-    if isinstance(whisper_engine, WhisperEngine):
-        whisper_model = whisper_engine._get_model()
-
-    # 7. Cache dir: cache_dir = recording_dir / ".transcripts"
+    # 6. Cache dir: cache_dir = recording_dir / ".transcripts"
     cache_dir = recording_dir / ".transcripts"
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # 7. Lazy Whisper engine loading (only if at least one track misses cache)
+    whisper_model: Any = None
+
+    def get_whisper_model() -> Any:
+        nonlocal whisper_model
+        if whisper_model is None:
+            whisper_engine = get_engine(
+                "whisper",
+                model_name=model_name,
+                device=device,
+                compute_type=compute_type,
+            )
+            if isinstance(whisper_engine, WhisperEngine):
+                whisper_model = whisper_engine._get_model()
+            else:
+                whisper_model = whisper_engine
+        return whisper_model
 
     # 8. Transcribe each track with transcribe_craig_track using provenance from compute_track_provenance
     all_segments: list[tuple[str, RawSegment]] = []
@@ -1366,14 +1375,20 @@ def craig(
             compute_type=compute_type,
             prompt_hash=prompt_hash,
         )
-        segments = transcribe_craig_track(
-            model=whisper_model,
-            track_path=track,
-            provenance=prov,
-            cache_dir=cache_dir,
-            initial_prompt=prompt if prompt else None,
-            force=force,
-        )
+        cache_path = cache_dir / f"{track.stem}.json"
+        cached_segments = load_track_cache(cache_path, prov, force=force)
+        if cached_segments is not None:
+            segments = cached_segments
+        else:
+            model = get_whisper_model()
+            segments = transcribe_craig_track(
+                model=model,
+                track_path=track,
+                provenance=prov,
+                cache_dir=cache_dir,
+                initial_prompt=prompt if prompt else None,
+                force=force,
+            )
         for seg in segments:
             all_segments.append((track.stem, seg))
 
@@ -1402,7 +1417,9 @@ def craig(
         console.print(
             f"[cyan]Refining transcript via agy CLI model '{refine_model}' (external LLM)...[/cyan]"
         )
-        final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
+        final_md = refine_transcript_markdown(
+            raw_md, agy_model=refine_model, effort=refine_effort
+        )
 
     # 13. Write output to out_path atomically using atomic_write_text
     atomic_write_text(out_path, final_md)

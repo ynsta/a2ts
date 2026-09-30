@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -48,6 +49,7 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
     if wav_path.is_file() and wav_path.stat().st_size > 44:
         return wav_path
 
+    tmp_path = wav_path.with_name(f"{wav_path.stem}.tmp_{os.getpid()}.wav")
     cmd = [
         "ffmpeg",
         "-y",
@@ -60,13 +62,21 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
         "16000",
         "-ac",
         "1",
-        str(wav_path),
+        str(tmp_path),
     ]
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if tmp_path.exists():
+            os.replace(tmp_path, wav_path)
     except subprocess.CalledProcessError as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
         stderr_msg = e.stderr.strip() if e.stderr else ""
         raise RuntimeError(f"ffmpeg/ffprobe error: {stderr_msg}") from e
+    except BaseException:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
     return wav_path
 
 
