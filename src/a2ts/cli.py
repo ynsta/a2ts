@@ -266,6 +266,9 @@ def run(
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
+    refine_model: Annotated[
+        str, typer.Option(help="Model name for LLM refiner")
+    ] = "gemini-3.8-flash-low",
     force: Annotated[
         bool,
         typer.Option("--force", help="Force re-transcription and re-diarization ignoring existing cache"),
@@ -576,11 +579,14 @@ def run(
     # 7. Optional LLM Refinement
     final_md = raw_md
     if refine:
-        console.print("[bold]Step 6: Refining transcript via local agy...[/bold]")
-        final_md = refine_transcript_markdown(raw_md)
+        raw_output = output.with_name(f"{output.stem}.raw.md")
+        atomic_write_text(raw_output, raw_md)
+        console.print(
+            f"[cyan]Refining transcript via agy CLI model '{refine_model}' (external LLM)...[/cyan]"
+        )
+        final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(final_md, encoding="utf-8")
+    atomic_write_text(output, final_md)
 
     # 8. Save session metadata
     duration = 0.0
@@ -1372,16 +1378,19 @@ def craig(
     # 11. Render markdown via render_markdown_transcript(debounced_turns)
     raw_md = render_markdown_transcript(debounced_turns)
 
+    out_path = output if output is not None else recording_dir / "transcript.md"
+
     # 12. If refine: refine with refine_transcript_markdown
     final_md = raw_md
     if refine:
+        raw_output = out_path.with_name(f"{out_path.stem}.raw.md")
+        atomic_write_text(raw_output, raw_md)
         console.print(
-            f"[bold]Refining transcript via local agy with model '{refine_model}'...[/bold]"
+            f"[cyan]Refining transcript via agy CLI model '{refine_model}' (external LLM)...[/cyan]"
         )
         final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
 
     # 13. Write output to out_path atomically using atomic_write_text
-    out_path = output if output is not None else recording_dir / "transcript.md"
     atomic_write_text(out_path, final_md)
 
     console.print(

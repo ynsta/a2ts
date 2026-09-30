@@ -43,7 +43,7 @@ src/a2ts/
 | [`timeline.py`](../src/a2ts/timeline.py) | Temporal slicing & word alignment | `align_words_to_speaker_turns()`, `assign_time_slices()`, `split_cluster_at_time()` | `cli.py`, `speaker_review.py` |
 | [`speaker_review.py`](../src/a2ts/speaker_review.py) | Interactive QCM & label propagation | `run_interactive_review()`, `apply_speakers_mapping()`, `apply_splits_to_turns()`, `propagate_speaker_labels()`, `save_speakers_mapping()` | `cli.py` |
 | [`consolidator.py`](../src/a2ts/consolidator.py) | Turn debouncing & Markdown formatting | `debounce_consecutive_turns()`, `normalize_rpg_terms()`, `render_markdown_transcript()` | `cli.py` |
-| [`refiner.py`](../src/a2ts/refiner.py) | External LLM transcript refinement | `refine_transcript_markdown()`, `build_refiner_prompt()`, `run_agy_refiner()` | `cli.py` |
+| [`refiner.py`](../src/a2ts/refiner.py) | External LLM transcript refinement & phonetic normalization | `extract_turn_headers()`, `chunk_transcript_markdown()`, `validate_refiner_chunk()`, `refine_transcript_markdown()`, `normalize_rpg_phonetics()` | `cli.py` |
 
 ---
 
@@ -90,5 +90,6 @@ tests/
 │   ├── test_consolidator.py    # Contiguous turn debouncing, RPG normalization & Markdown
 │   └── test_refiner.py         # Prompt generation & agy subprocess safety guards
 ├── test_cli.py                 # Comprehensive Typer runner CLI argument tests
-└── test_splits_persistence.py  # Split persistence, positional fallback & voice profile enrollment tests
+├── test_splits_persistence.py  # Split persistence, positional fallback & voice profile enrollment tests
+└── test_refiner_safety.py      # Refiner safety guards, turn chunking, header/length validation & raw markdown output
 ```
