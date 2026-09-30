@@ -65,19 +65,21 @@ def apply_speakers_mapping(
 
 
 def save_speakers_mapping(mapping: SpeakersMapping, path: Path) -> None:
-    """Save mapping configuration to JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    """Save mapping configuration to JSON file or session directory."""
+    target_file = path / "speakers_mapping.json" if path.is_dir() else path
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text(
         json.dumps(mapping.model_dump(), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
 
 def load_speakers_mapping(path: Path) -> SpeakersMapping:
-    """Load mapping configuration from JSON file."""
-    if not path.is_file():
+    """Load mapping configuration from JSON file or session directory."""
+    target_file = path / "speakers_mapping.json" if path.is_dir() else path
+    if not target_file.is_file():
         return SpeakersMapping()
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(target_file.read_text(encoding="utf-8"))
     return SpeakersMapping.model_validate(data)
 
 

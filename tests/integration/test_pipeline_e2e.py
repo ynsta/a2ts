@@ -226,9 +226,10 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     assert "SPEAKER_01" not in db1.speakers
 
     # Verify session 1 cache artifacts
-    assert (session1_cache / "turns.json").is_file()
-    assert (session1_cache / "speakers_mapping.json").is_file()
-    mapping1 = load_speakers_mapping(session1_cache / "speakers_mapping.json")
+    sess1_dir = next((session1_cache / "sessions").iterdir())
+    assert (sess1_dir / "turns.json").is_file()
+    assert (sess1_dir / "speakers_mapping.json").is_file()
+    mapping1 = load_speakers_mapping(sess1_dir / "speakers_mapping.json")
     assert mapping1.cluster_defaults.get("SPEAKER_00") == "Brakk"
 
     # Verify embeddings cache files exist
@@ -304,7 +305,8 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     assert "] Brakk" in content2
     assert "] SPEAKER_01" in content2
 
-    mapping2 = load_speakers_mapping(session2_cache / "speakers_mapping.json")
+    sess2_dir = next((session2_cache / "sessions").iterdir())
+    mapping2 = load_speakers_mapping(sess2_dir / "speakers_mapping.json")
     assert mapping2.cluster_defaults.get("SPEAKER_00") == "Brakk"
 
     # --- FAST RECLUSTER: Recluster session 1 using cached embeddings ---
@@ -340,7 +342,7 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
 
     re_turns = [
         AlignedTurn.model_validate(t)
-        for t in json.loads((session1_cache / "turns.json").read_text(encoding="utf-8"))
+        for t in json.loads((sess1_dir / "turns.json").read_text(encoding="utf-8"))
     ]
     assert len(re_turns) == 3
     assert all(t.cluster_id == "SPEAKER_00" for t in re_turns)

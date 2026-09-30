@@ -72,6 +72,35 @@ app = typer.Typer(help="a2ts: Contextualized Audio/Video Transcriber")
 console = Console()
 
 
+def resolve_session_dir(path: Path) -> Path:
+    """Resolve session directory from either a session folder or a cache directory.
+
+    1. If `path / 'turns.json'` exists or `path / 'session.json'` exists (direct session directory
+       or legacy root cache), return `path`.
+    2. Else if `(path / 'sessions').is_dir()`:
+       - If exactly 1 session directory exists, return it.
+       - If multiple session directories exist, raise typer.Exit(code=1) with available sessions.
+       - If no sessions exist, raise typer.Exit(code=1).
+    3. Return `path` fallback.
+    """
+    if (path / "turns.json").is_file() or (path / "session.json").is_file():
+        return path
+    sessions_dir = path / "sessions"
+    if sessions_dir.is_dir():
+        sessions = sorted([d for d in sessions_dir.iterdir() if d.is_dir()])
+        if len(sessions) == 1:
+            return sessions[0]
+        if len(sessions) > 1:
+            session_hashes = [s.name for s in sessions]
+            console.print(
+                f"[bold red]Multiple sessions found in {sessions_dir}. Please specify a session directory: {', '.join(session_hashes)}[/bold red]"
+            )
+            raise typer.Exit(code=1)
+        console.print(f"[bold red]No sessions found in {sessions_dir}[/bold red]")
+        raise typer.Exit(code=1)
+    return path
+
+
 @app.command()
 def info() -> None:
     """Show system information and a2ts configuration."""
@@ -255,6 +284,8 @@ def run(
     # 1. Extract audio
     console.print("[bold]Step 1: Extracting audio stream...[/bold]")
     file_hash = compute_file_hash(media_file)
+    session_dir = cache_dir / "sessions" / file_hash
+    session_dir.mkdir(parents=True, exist_ok=True)
     audio_path = extract_audio_to_wav(media_file, cache_dir / "audio_cache")
 
     # 2. Mine lore & vocabulary
@@ -345,7 +376,7 @@ def run(
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
     # Cache aligned turns for review and split subcommands
-    turns_path = cache_dir / "turns.json"
+    turns_path = session_dir / "turns.json"
     atomic_write_text(
         turns_path,
         json.dumps(
@@ -354,7 +385,7 @@ def run(
     )
 
     # 5. Interactive speaker review & voice profile matching
-    mapping_path = cache_dir / "speakers_mapping.json"
+    mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
 
     loaded_db: VoiceProfilesDatabase | None = None
@@ -561,7 +592,7 @@ def run(
         created_at=datetime.now(UTC).isoformat(),
         output_path=str(output),
     )
-    (cache_dir / "session.json").write_text(
+    (session_dir / "session.json").write_text(
         json.dumps(session_meta.model_dump(), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -654,6 +685,7 @@ def review(
     ] = None,
 ) -> None:
     """Re-run interactive speaker review on cached session turns."""
+    session_dir = resolve_session_dir(session_dir)
     turns_path = session_dir / "turns.json"
     if not turns_path.is_file():
         console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
@@ -661,6 +693,12 @@ def review(
 
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
     turns = [AlignedTurn.model_validate(t) for t in turns_data]
+
+    cache_root = (
+        session_dir.parent.parent
+        if session_dir.parent.name == "sessions"
+        else session_dir
+    )
 
     audio_path: Path | None = None
     session_path = session_dir / "session.json"
@@ -670,6 +708,10 @@ def review(
                 session_path.read_text(encoding="utf-8")
             )
             cached_wav = session_dir / "audio_cache" / f"{session_meta.media_hash}.wav"
+            if not cached_wav.is_file():
+                cached_wav = (
+                    cache_root / "audio_cache" / f"{session_meta.media_hash}.wav"
+                )
             if cached_wav.is_file():
                 audio_path = cached_wav
             elif Path(session_meta.media_path).is_file():
@@ -691,6 +733,8 @@ def review(
             media_hash = None
 
     diarization_dir = session_dir / "diarization"
+    if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
+        diarization_dir = cache_root / "diarization"
     embeddings_npy: Path | None = None
     indices_json: Path | None = None
     if media_hash:
@@ -861,6 +905,7 @@ def split(
     output: Annotated[Path | None, typer.Option(help="Output markdown path")] = None,
 ) -> None:
     """Split speaker cluster at timestamp and regenerate transcript."""
+    session_dir = resolve_session_dir(session_dir)
     turns_path = session_dir / "turns.json"
     if not turns_path.is_file():
         console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
@@ -942,6 +987,7 @@ def recluster(
     ] = False,
 ) -> None:
     """Re-cluster cached speaker embeddings and regenerate transcript."""
+    session_dir = resolve_session_dir(session_dir)
     session_path = session_dir / "session.json"
     if not session_path.is_file():
         console.print(
@@ -960,9 +1006,18 @@ def recluster(
     media_hash = session_meta.media_hash
     engine = session_meta.engine
 
-    transcripts_cache = session_dir / "transcripts" / f"{media_hash}_{engine}.json"
+    cache_root = (
+        session_dir.parent.parent
+        if session_dir.parent.name == "sessions"
+        else session_dir
+    )
+
+    transcripts_dir = session_dir / "transcripts"
+    if not transcripts_dir.is_dir() and (cache_root / "transcripts").is_dir():
+        transcripts_dir = cache_root / "transcripts"
+    transcripts_cache = transcripts_dir / f"{media_hash}_{engine}.json"
     if not transcripts_cache.is_file():
-        candidates = list((session_dir / "transcripts").glob(f"{media_hash}_*.json"))
+        candidates = list(transcripts_dir.glob(f"{media_hash}_*.json"))
         if candidates:
             transcripts_cache = candidates[0]
         else:
@@ -984,6 +1039,8 @@ def recluster(
         raise typer.Exit(code=1)
 
     diarization_dir = session_dir / "diarization"
+    if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
+        diarization_dir = cache_root / "diarization"
     embeddings_npy = diarization_dir / f"{media_hash}_segment_embeddings.npy"
     indices_json = diarization_dir / f"{media_hash}_segment_indices.json"
     if not (embeddings_npy.is_file() and indices_json.is_file()):

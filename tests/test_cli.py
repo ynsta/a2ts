@@ -137,8 +137,10 @@ def test_run_caching_and_provenance(
     assert result.exit_code == 0
     dummy_engine.transcribe.assert_called_once()
 
-    # Verify session.json
-    session_file = cache_dir / "session.json"
+    # Verify session.json scoped under sessions/<hash>
+    sessions = list((cache_dir / "sessions").glob("*/session.json"))
+    assert len(sessions) == 1
+    session_file = sessions[0]
     assert session_file.is_file()
     session_data = json.loads(session_file.read_text(encoding="utf-8"))
     assert session_data["engine"] == "whisper"
@@ -147,7 +149,7 @@ def test_run_caching_and_provenance(
     assert session_data["output_path"] == str(out_file)
 
     # Verify turns.json has SPEAKER_00 fallback
-    turns_file = cache_dir / "turns.json"
+    turns_file = session_file.parent / "turns.json"
     assert turns_file.is_file()
     turns_data = json.loads(turns_file.read_text(encoding="utf-8"))
     assert len(turns_data) >= 1
