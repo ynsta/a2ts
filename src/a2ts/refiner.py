@@ -57,7 +57,8 @@ def validate_refiner_chunk(original: str, refined: str) -> bool:
     ref_words = len(refined.split())
     if orig_words == 0:
         return ref_words == 0
-    return abs(ref_words - orig_words) / orig_words <= 0.15
+    allowed_delta = max(5, int(orig_words * 0.15))
+    return abs(ref_words - orig_words) <= allowed_delta
 
 
 def refine_transcript_markdown(
