@@ -42,7 +42,7 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 - Scans user Obsidian vaults or Markdown context directories (default: `contexte/`).
 - Extracts named entities, `[[wikilinks]]`, YAML frontmatter `aliases:`, and document headings (`#`, `##`, etc.).
 - Deduplicates and tokenizes discovered terms using `cl100k_base` BPE tokenizer.
-- Packs extracted terms into a token-budgeted prompt (default: 250 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
+- Packs extracted terms into a token-budgeted prompt (default: 220 tokens, Whisper max 224 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
 
 ### 3.3 Dual-Engine Speech Recognition (ASR)
 - **Faster-Whisper**:
@@ -83,9 +83,9 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Rich CLI review interface for ambiguous or unmapped speaker clusters.
   - Displays cluster statistics, sample dialogue quotes, and plays audio snippets.
   - Suggests candidate names mined from `speakers.txt` or Obsidian lore.
-  - Saves speaker choices to persistent `speakers_mapping.json`.
+  - Saves speaker choices to persistent `.a2ts/sessions/<media-sha256>/speakers_mapping.json`.
 - **Temporal Cluster Splitting**:
-  - Subcommand `a2ts split <cluster_id> <split_time_sec> <new_cluster_id>` splits acoustic clusters when physical speaker changes mid-recording.
+  - Subcommand `a2ts split <session_dir> <cluster_id> --at <seconds> --to <new_cluster_id>` splits acoustic clusters when physical speaker changes mid-recording.
 
 ### 3.7 Transcript Consolidation & LLM Refinement
 - Debounces contiguous speaker turns (merges turns from the same speaker separated by <= 2.0s silence).
@@ -101,8 +101,10 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Corrects phonetic ASR errors (`jets-dés`, `jet de délai` -> `jets de dés` / `jet de dés`).
 - Optional local LLM refinement pass via `agy` CLI (`--refine`):
   - Normalizes vocabulary deterministically.
+  - **Data Boundary**: Core inference (ASR and diarization) runs 100% locally. The `--refine` pass delegates chunked markdown transcripts to the external `agy` CLI binary (`agy --model <model> --effort <effort>`), which defaults to Google Gemini (`gemini-3.8-flash-low`) or another configured model, introducing network egress when cloud providers are configured.
+  - Raw unrefined markdown is always written to `<output>.raw.md` before refinement begins.
   - Separates in-character roleplay from out-of-character remarks (`> [!NOTE] Hors-jeu`).
-  - Enforces safety check (Levenshtein distance limit) to prevent hallucinations.
+  - Enforces safety checks: verifies all turn headers (`### [HH:MM:SS - HH:MM:SS]`) are preserved and word count remains within a 15% delta, falling back to raw chunk on mismatch to prevent hallucination.
 
 ### 3.8 Multi-Track Ingestion & Discord Craig Pipeline
 - Accepts directories containing isolated per-speaker `.flac` tracks produced by the Craig Discord recording bot (`^(\d+)-(.*)\.flac`).
@@ -141,7 +143,7 @@ a2ts run <media_file> [OPTIONS]
 | `--slice-minutes` | `float` | `15.0` | Time slice window size in minutes |
 | `--diarize / --no-diarize` | `bool` | `True` | Enable acoustic speaker diarization |
 | `--diarizer-engine` | `str` | `auto` | Diarizer backend: `auto`, `nemotron`, `ecapa` |
-| `--cluster-threshold` | `float` | `0.30` | Cosine distance threshold for speaker clustering |
+| `--cluster-threshold` | `float` | `0.60` | Cosine distance threshold for speaker clustering |
 | `--num-speakers` | `int` | `None` | Target speaker count constraint |
 | `--voice-profiles` | `Path` | `contexte/voice_profiles.json` | Voice profile database JSON path |
 | `--profile-threshold` | `float` | `0.60` | Cosine similarity threshold for voice profiles |
@@ -150,7 +152,9 @@ a2ts run <media_file> [OPTIONS]
 | `--speakers-file` | `Path` | `None` | Path to text file listing known speaker names |
 | `--interactive / --no-interactive` | `bool` | `True` | Enable interactive terminal QCM speaker review |
 | `--force / --no-force` | `bool` | `False` | Force re-running transcription/diarization, ignoring cache |
-| `--refine / --no-refine` | `bool` | `False` | Run local LLM post-processing via `agy` CLI |
+| `--rpg-normalize / --no-rpg-normalize` | `bool` | `True` | Normalize French tabletop RPG dice expressions and terms |
+| `--refine / --no-refine` | `bool` | `False` | Run LLM post-processing via `agy` CLI (remote delegation) |
+| `--refine-model` | `str` | `gemini-3.8-flash-low` | Model name for LLM refiner via `agy` CLI |
 | `--output` | `Path` | `transcript.md` | Final Markdown transcript destination |
 | `--cache-dir` | `Path` | `.a2ts` | Local artifact cache directory |
 
@@ -172,29 +176,29 @@ a2ts craig <recording_dir> [OPTIONS]
 | `--output` | `Path` | `None` | Output markdown transcript path (defaults to `<recording_dir>/transcript.md`) |
 | `--debounce` | `float` | `2.0` | Debounce window in seconds for consecutive turns |
 | `--force` | `bool` | `False` | Force re-transcription ignoring existing `.transcripts/` cache |
-| `--refine / --no-refine` | `bool` | `False` | Run local LLM refiner pass on transcript |
-| `--refine-model` | `str` | `gemini-2.5-flash` | Model name for LLM refiner |
+| `--refine / --no-refine` | `bool` | `False` | Run LLM refiner pass on transcript via `agy` CLI |
+| `--refine-model` | `str` | `gemini-3.8-flash-low` | Model name for LLM refiner |
 | `--refine-effort` | `str` | `low` | Reasoning effort for LLM refiner (`low`, `medium`, `high`) |
 
 ### 4.3 `a2ts review`
-Re-runs interactive speaker review on cached session turns without re-transcribing audio.
+Re-runs interactive speaker review on cached session turns without re-transcribing audio. Target session directory defaults to `.a2ts` (resolving `.a2ts/sessions/<media-sha256>/`).
 
 ```bash
-a2ts review <session_dir> [OPTIONS]
+a2ts review [SESSION_DIR] [OPTIONS]
 ```
 
 ### 4.4 `a2ts recluster`
-Re-runs agglomerative clustering on cached turn embeddings with a modified threshold or speaker count constraint.
+Re-runs agglomerative clustering on cached turn embeddings with a modified threshold or speaker count constraint. Target session directory defaults to `.a2ts` (resolving `.a2ts/sessions/<media-sha256>/`).
 
 ```bash
-a2ts recluster <session_dir> [OPTIONS]
+a2ts recluster [SESSION_DIR] [OPTIONS]
 ```
 
 ### 4.5 `a2ts split`
-Splits an existing speaker cluster at a given timestamp to correct acoustic cluster collisions.
+Splits an existing speaker cluster at a given timestamp to correct acoustic cluster collisions and persists the split in the session's `speakers_mapping.json`.
 
 ```bash
-a2ts split <cluster_id> <split_time_seconds> <new_cluster_id> [OPTIONS]
+a2ts split <session_dir> <cluster_id> --at <split_time_seconds> --to <new_cluster_id> [OPTIONS]
 ```
 
 ### 4.6 `a2ts extract-vocab`
@@ -218,4 +222,4 @@ Displays current environment, hardware accelerators, CUDA availability, and inst
    - Invalidation occurs automatically on parameter change or when `--force` is supplied.
 3. **Voice Profile Idempotency**:
    - `VoiceProfile` tracks `sample_ids: list[str]` to guarantee repeated enrollment runs on identical session turns produce zero centroid drift.
-4. **Data Integrity**: Under no circumstances should transcript text be permanently modified or discarded without an immutable raw cache copy in `.a2ts/transcripts/`.
+4. **Data Integrity**: Under no circumstances should transcript text be permanently modified or discarded without an immutable raw cache copy in `.a2ts/transcripts/` and `.a2ts/sessions/<media-sha256>/turns.json`.

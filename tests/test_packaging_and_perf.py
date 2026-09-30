@@ -56,23 +56,39 @@ def test_pyproject_dependencies_clean() -> None:
 
     # 1. No pandas in main dependencies
     pandas_deps = [d for d in deps if d.lower().startswith("pandas")]
-    assert len(pandas_deps) == 0, f"pandas should be removed from dependencies: {pandas_deps}"
+    assert len(pandas_deps) == 0, (
+        f"pandas should be removed from dependencies: {pandas_deps}"
+    )
 
     # 2. torch>=2.2.0 declared
     torch_deps = [d for d in deps if d.lower().startswith("torch")]
     assert len(torch_deps) > 0, "torch>=2.2.0 must be declared in dependencies"
-    assert any(">=2.2.0" in d for d in torch_deps), f"torch dependency must require >=2.2.0: {torch_deps}"
+    assert any(">=2.2.0" in d for d in torch_deps), (
+        f"torch dependency must require >=2.2.0: {torch_deps}"
+    )
 
     # 3. Platform markers on nvidia-cublas-cu12 and nvidia-cudnn-cu12
     cublas_deps = [d for d in deps if "nvidia-cublas-cu12" in d]
     assert len(cublas_deps) == 1, "nvidia-cublas-cu12 missing"
-    assert "sys_platform == 'linux'" in cublas_deps[0] or "sys_platform == \"linux\"" in cublas_deps[0]
-    assert "sys_platform == 'win32'" in cublas_deps[0] or "sys_platform == \"win32\"" in cublas_deps[0]
+    assert (
+        "sys_platform == 'linux'" in cublas_deps[0]
+        or 'sys_platform == "linux"' in cublas_deps[0]
+    )
+    assert (
+        "sys_platform == 'win32'" in cublas_deps[0]
+        or 'sys_platform == "win32"' in cublas_deps[0]
+    )
 
     cudnn_deps = [d for d in deps if "nvidia-cudnn-cu12" in d]
     assert len(cudnn_deps) == 1, "nvidia-cudnn-cu12 missing"
-    assert "sys_platform == 'linux'" in cudnn_deps[0] or "sys_platform == \"linux\"" in cudnn_deps[0]
-    assert "sys_platform == 'win32'" in cudnn_deps[0] or "sys_platform == \"win32\"" in cudnn_deps[0]
+    assert (
+        "sys_platform == 'linux'" in cudnn_deps[0]
+        or 'sys_platform == "linux"' in cudnn_deps[0]
+    )
+    assert (
+        "sys_platform == 'win32'" in cudnn_deps[0]
+        or 'sys_platform == "win32"' in cudnn_deps[0]
+    )
 
 
 # ============================================================================
@@ -268,7 +284,9 @@ def test_craig_cli_loads_whisper_when_cache_misses(tmp_path: Path) -> None:
     mock_model = MagicMock()
     mock_model.transcribe.return_value = ([mock_segment], None)
 
-    with patch("a2ts.transcriber.WhisperEngine._get_model", return_value=mock_model) as mock_get_model:
+    with patch(
+        "a2ts.transcriber.WhisperEngine._get_model", return_value=mock_model
+    ) as mock_get_model:
         result = runner.invoke(app, ["craig", str(rec_dir), "--no-rpg-normalize"])
         assert result.exit_code == 0, f"Command failed: {result.output}"
         mock_get_model.assert_called_once()
@@ -305,7 +323,9 @@ def test_craig_cli_wires_refine_effort(tmp_path: Path) -> None:
     empty_ctx = tmp_path / "empty_ctx"
     empty_ctx.mkdir()
 
-    with patch("a2ts.cli.refine_transcript_markdown", return_value="Refined text") as mock_refine:
+    with patch(
+        "a2ts.cli.refine_transcript_markdown", return_value="Refined text"
+    ) as mock_refine:
         result = runner.invoke(
             app,
             [
@@ -518,7 +538,9 @@ def test_extract_audio_to_wav_atomic_replace(tmp_path: Path) -> None:
     # ffmpeg destination must NOT have been the final wav_path directly
     assert len(recorded_ffmpeg_cmd) > 0
     ffmpeg_target = recorded_ffmpeg_cmd[-1]
-    assert ffmpeg_target != str(wav_path), "ffmpeg should write to a temporary file first"
+    assert ffmpeg_target != str(wav_path), (
+        "ffmpeg should write to a temporary file first"
+    )
     assert f"tmp_{os.getpid()}" in ffmpeg_target or "tmp" in ffmpeg_target
 
     # os.replace must have moved tmp file to final wav_path
@@ -594,8 +616,12 @@ def test_ensure_cuda_libs_preloads_only_cublas_and_cudnn(tmp_path: Path) -> None
     assert any("libcudnn" in s for s in loaded_so)
 
     # Must NOT contain cufft or cusparse
-    assert not any("libcufft" in s for s in loaded_so), f"libcufft was preloaded: {loaded_so}"
-    assert not any("libcusparse" in s for s in loaded_so), f"libcusparse was preloaded: {loaded_so}"
+    assert not any("libcufft" in s for s in loaded_so), (
+        f"libcufft was preloaded: {loaded_so}"
+    )
+    assert not any("libcusparse" in s for s in loaded_so), (
+        f"libcusparse was preloaded: {loaded_so}"
+    )
 
 
 # ============================================================================
@@ -611,4 +637,8 @@ def test_diarizer_valid_indices_uses_set() -> None:
 
     source = inspect.getsource(diarizer.diarize_segments)
     # Source must not check 'i not in valid_indices' when valid_indices is a list
-    assert "set(valid_indices)" in source or "valid_indices_set = set(valid_indices)" in source or "valid_set = set(valid_indices)" in source
+    assert (
+        "set(valid_indices)" in source
+        or "valid_indices_set = set(valid_indices)" in source
+        or "valid_set = set(valid_indices)" in source
+    )

@@ -171,4 +171,3 @@ def test_debounce_preserves_text_without_normalization() -> None:
     assert debounced[0].text == "Lance un dé 20 pour voir."
     md = render_markdown_transcript(debounced)
     assert "Lance 1d20 pour voir." in md
-

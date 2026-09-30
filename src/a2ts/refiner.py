@@ -10,17 +10,7 @@ from a2ts.consolidator import normalize_rpg_terms
 
 logger = logging.getLogger(__name__)
 
-PHONETIC_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bun des vingt\b", re.IGNORECASE), "1d20"),
-    (re.compile(r"\bun dé vingt\b", re.IGNORECASE), "1d20"),
-    (re.compile(r"\bdeux des six\b", re.IGNORECASE), "2d6"),
-    (re.compile(r"\bjets? de délai\b", re.IGNORECASE), "jet de dés"),
-    (re.compile(r"\bjet d'initiative\b", re.IGNORECASE), "jet d'initiative"),
-]
-
-TURN_HEADER_PATTERN = re.compile(
-    r"^###\s+\[[\d:.]+\s*-\s*[\d:.]+\].*$", re.MULTILINE
-)
+TURN_HEADER_PATTERN = re.compile(r"^###\s+\[[\d:.]+\s*-\s*[\d:.]+\].*$", re.MULTILINE)
 
 
 def normalize_rpg_phonetics(text: str) -> str:

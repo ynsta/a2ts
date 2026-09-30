@@ -307,7 +307,12 @@ def test_voice_profiles_idempotent_enrollment() -> None:
 
     # Re-enrolling the exact same session turns must NOT double-count samples or drift centroid
     db2 = compute_voice_profiles(
-        embeddings, valid_indices, turns, mapping, existing_db=db1, session_id="session1"
+        embeddings,
+        valid_indices,
+        turns,
+        mapping,
+        existing_db=db1,
+        session_id="session1",
     )
     assert db2.speakers["Brakk"].sample_count == 2
     assert np.allclose(db2.speakers["Brakk"].centroid, c1)
@@ -475,7 +480,9 @@ def test_diarize_nemotron_success(
 
     # Second call should load from cache without calling model
     mock_get_model.reset_mock()
-    cached_turns = diarize_nemotron(Path("dummy.wav"), device="cuda", cache_path=cache_file)
+    cached_turns = diarize_nemotron(
+        Path("dummy.wav"), device="cuda", cache_path=cache_file
+    )
     assert len(cached_turns) == 2
     assert cached_turns[0].cluster_id == "SPEAKER_00"
     mock_get_model.assert_not_called()
@@ -502,7 +509,9 @@ def test_diarize_segments_engine_ecapa(
     mock_sf_read.return_value = (dummy_audio, 16000)
     mock_classifier = MagicMock()
     mock_classifier.encode_batch.return_value = MagicMock(
-        squeeze=lambda: MagicMock(cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0])))
+        squeeze=lambda: MagicMock(
+            cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0]))
+        )
     )
     mock_get_model.return_value = mock_classifier
 
@@ -542,7 +551,9 @@ def test_diarize_segments_engine_auto_fallback(
     mock_sf_read.return_value = (dummy_audio, 16000)
     mock_classifier = MagicMock()
     mock_classifier.encode_batch.return_value = MagicMock(
-        squeeze=lambda: MagicMock(cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0])))
+        squeeze=lambda: MagicMock(
+            cpu=lambda: MagicMock(numpy=lambda: np.array([1.0, 0.0]))
+        )
     )
     mock_get_model.return_value = mock_classifier
 
@@ -573,7 +584,9 @@ def test_extract_embeddings_for_turns(
 
     turns = [
         SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
-        SpeakerTurn(id=1, start=2.0, end=2.05, cluster_id="SPEAKER_01"),  # too short (<0.15s)
+        SpeakerTurn(
+            id=1, start=2.0, end=2.05, cluster_id="SPEAKER_01"
+        ),  # too short (<0.15s)
         SpeakerTurn(id=2, start=3.0, end=5.0, cluster_id="SPEAKER_00"),
     ]
 
@@ -592,5 +605,3 @@ def test_extract_embeddings_for_turns(
     assert Path(f"{cache_prefix}_turn_embeddings_provenance.json").is_file()
     assert not Path(f"{cache_prefix}_embeddings.npy").exists()
     assert not Path(f"{cache_prefix}_indices.json").exists()
-
-

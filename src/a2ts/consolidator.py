@@ -37,9 +37,7 @@ DICE_COUNT_MAP = {
     "6": "6",
 }
 
-EXCLUDED_FOLLOWING_NOUNS = (
-    "gardes|joueurs|soldats|membres|ans|minutes|secondes|jours|heures|mètres|personnages|ennemis|individus|points"
-)
+EXCLUDED_FOLLOWING_NOUNS = "gardes|joueurs|soldats|membres|ans|minutes|secondes|jours|heures|mètres|personnages|ennemis|individus|points"
 
 ROLL_KEYWORDS = (
     r"(?:lance[rsz]?|lancent|roule[rsz]?|roulent|jet[s]?(?:\s+(?:de|d['’]))?|"
@@ -63,11 +61,12 @@ DICE_PATTERN = re.compile(
 
 def normalize_rpg_terms(text: str) -> str:
     """Normalize common phonetic tabletop RPG speech recognition artifacts."""
+
     def _jet_repl(m: re.Match[str]) -> str:
         return "jets de dés" if m.group(2) else "jet de dés"
 
     out = re.sub(r"\b(jet)(s)?\s*-\s*dés?\b", _jet_repl, text, flags=re.IGNORECASE)
-    out = re.sub(r"\bjets?\s+de\s+délai\b", "jet de dés", out, flags=re.IGNORECASE)
+    out = re.sub(r"\b(jet)(s)?\s+de\s+délai\b", _jet_repl, out, flags=re.IGNORECASE)
     out = re.sub(
         r"\b(jet)(s)?\s*d['’]\s*initiative\b",
         lambda m: "jets d'initiative" if m.group(2) else "jet d'initiative",
@@ -103,9 +102,7 @@ def normalize_rpg_terms(text: str) -> str:
                 continue
 
         count = (
-            DICE_COUNT_MAP.get(count_match.lower(), count_match)
-            if count_match
-            else "1"
+            DICE_COUNT_MAP.get(count_match.lower(), count_match) if count_match else "1"
         )
         sides = DICE_SIDES_MAP.get(sides_match.lower(), sides_match)
         prefix_dice = (

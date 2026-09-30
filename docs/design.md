@@ -17,7 +17,7 @@ flowchart TD
     MediaStage --> MonoWav["Normalized 16kHz Mono WAV\n(.a2ts/audio_cache/)"]
     
     LoreNotes["Obsidian Vault / Lore Notes\n(contexte/*.md)"] --> VocabStage["vocab.py\n(Entity & Wikilink Mining)"]
-    VocabStage --> LorePrompt["Lore Prompt (< 250 tokens)\n(cl100k_base BPE)"]
+    VocabStage --> LorePrompt["Lore Prompt (< 220 tokens)\n(cl100k_base BPE)"]
     
     MonoWav --> ASRStage["transcriber.py\n(Whisper or Voxtral Engine)"]
     LorePrompt --> ASRStage
@@ -26,20 +26,20 @@ flowchart TD
     MonoWav --> DiarStage["diarizer.py\n(Nemotron-3 or SpeechBrain ECAPA)"]
     DiarStage --> SpeakerTurns["Speaker Turns\n(.a2ts/diarization/)"]
     
-    RawSegments --> TimelineStage["timeline.py\n(Midpoint Word-to-Turn Alignment)"]
+    RawSegments --> TimelineStage["timeline.py\n(Bisect Word-to-Turn Alignment)"]
     SpeakerTurns --> TimelineStage
-    TimelineStage --> AlignedTurns["Aligned Turns\n(.a2ts/turns.json)"]
+    TimelineStage --> AlignedTurns["Aligned Turns\n(.a2ts/sessions/<media_hash>/turns.json)"]
     
     AlignedTurns --> ReviewStage["speaker_review.py & diarizer.py\n(QCM Review & Voice Profile Matching)"]
     VoiceProfilesDB["Voice Profiles DB\n(contexte/voice_profiles.json)"] <--> ReviewStage
-    ReviewStage --> SpeakersMapping["Speakers Mapping\n(.a2ts/speakers_mapping.json)"]
+    ReviewStage --> SpeakersMapping["Speakers Mapping & Splits\n(.a2ts/sessions/<media_hash>/speakers_mapping.json)"]
     
     AlignedTurns --> ConsolidateStage["consolidator.py\n(Debounce & Markdown Assembly)"]
     SpeakersMapping --> ConsolidateStage
-    ConsolidateStage --> RawMarkdown["Raw Markdown Transcript\n(transcript.raw.md)"]
+    ConsolidateStage --> RawMarkdown["Raw Markdown Transcript\n(<output>.raw.md)"]
     
-    RawMarkdown --> RefinerStage["refiner.py\n(Local LLM Refinement via agy CLI)"]
-    RefinerStage --> FinalOutput["Final Formatted Transcript\n(transcript.md)"]
+    RawMarkdown --> RefinerStage["refiner.py\n(Optional LLM Refinement via agy CLI)"]
+    RefinerStage --> FinalOutput["Final Formatted Transcript\n(<output>.md)"]
 ```
 
 ### 1.2 Craig Multi-Track Pipeline Data Flow
@@ -116,21 +116,23 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
    - Operates independently of ASR boundaries, producing raw continuous `SpeakerTurn` slices.
 2. **Turn Embedding & Profile Matching (ECAPA-TDNN)**:
    - When `--voice-profiles` is supplied, extracts 192-dimensional embeddings for each Nemotron turn (>= 0.15s) using `speechbrain/spkrec-ecapa-voxceleb`.
+   - Embeddings and diarization turns are bound to the raw transcription via `DiarizationCacheProvenance` (recording `transcript_provenance_hash`) and `EmbeddingCacheProvenance`. If transcription settings change, downstream diarization and embedding caches are invalidated.
    - Compares turn embeddings against enrolled centroids in `VoiceProfilesDatabase` via cosine similarity.
    - If similarity exceeds `--profile-threshold` (default 0.60), automatically tags the cluster with the enrolled person's name (e.g. `SPEAKER_00 -> "Quillon"`).
 3. **On-Demand Execution**:
    - If `--voice-profiles` is not requested and no named speaker overrides exist, ECAPA is never loaded. The pipeline runs at pure Nemotron speed (~130x real-time).
 
 ### 2.5 Timeline Alignment & Slicing (`timeline.py`)
-- Projects words onto speaker turns: for each `WordTimestamp`, calculates midpoint `(start + end) / 2` and attributes word to the active `SpeakerTurn`.
+- **Bisect Word-to-Turn Alignment**: Projects words onto speaker turns using binary search (`bisect_left` and `bisect_right`) over sorted turn start timestamps. For each `WordTimestamp`, calculates midpoint `(start + end) / 2.0` and identifies overlapping candidate `SpeakerTurn` entries within a bounded `max_turn_duration` window in $O(W \log T)$ time (where $W$ is word count and $T$ is turn count). Falls back to the nearest adjacent turn within a local 5-turn window if no turn strictly encloses the midpoint.
 - Groups turns into configurable temporal windows (e.g. 15-minute time slices) using `assign_time_slices()`.
-- Supports temporal cluster division (`split_cluster_at_time()`) when a single acoustic cluster inadvertently spans distinct speakers.
+- Supports temporal cluster division (`split_cluster_at_time()`, `apply_splits_to_turns()`) when a single acoustic cluster inadvertently spans distinct speakers.
 
 ### 2.6 Interactive Attribution (`speaker_review.py`)
 - Evaluates candidate names from `speakers.txt` or context lore against cluster turn counts and durations.
 - Presents a terminal-based QCM menu using Rich and Typer.
 - Plays short audio excerpts around representative quotes via `ffplay` or `aplay` (with configurable `--audio-padding`).
 - Propagates identified speaker names forwards and backwards across ambiguous turns.
+- Persists temporal cluster splits into `.a2ts/sessions/<media_hash>/speakers_mapping.json`.
 
 ### 2.7 Consolidation & Post-Processing (`consolidator.py` & `refiner.py`)
 - **Debouncing**: Contiguous turns with matching speaker IDs separated by <= 2.0s are concatenated into a single turn block.
@@ -138,24 +140,20 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
   - Replaces speech-recognition artifacts for dice notations (`lance un dé 20` -> `lance 1d20`, `trois dés de six` -> `3d6`).
   - Guards against noun confusion (`20 gardes`, `10 minutes`, `6 joueurs`).
   - Replaces phonetic artifacts (`jets-dés`, `jet de délai` -> `jets de dés` / `jet de dés`).
-- **Markdown Rendering**: Formats speech into Markdown blocks with clickable anchor headers:
-  ```markdown
-  ### [00:15:30 - 00:15:45] Dorsa
-  
-  Je lance 1d20 sur le coffre.
-  ```
-- **Local LLM Refinement**:
-  - Builds an instruction prompt with context lore.
-  - Invokes local `agy` CLI via subprocess (`agy -m <model> --system <prompt>`).
-  - Formats table banter, dice rolls, and out-of-character comments into standard GitHub alerts (`> [!NOTE] Hors-jeu`).
-  - Guards against hallucination by verifying that character edit distance remains within safe bounds.
+- **Markdown Rendering**: Formats speech into Markdown blocks with timestamp headers (`### [HH:MM:SS - HH:MM:SS] Speaker`).
+- **Pre-Refinement Snapshot**: Always emits `<output>.raw.md` containing the un-modified consolidated transcript before running LLM refinement.
+- **LLM Refinement via `agy` CLI (`refiner.py`)**:
+  - Splits transcript markdown into manageable chunks (default: 25 turns) via `chunk_transcript_markdown()`.
+  - Dispatches chunks to external `agy` CLI subprocess (`agy --model <model> --effort <effort>`).
+  - Encloses out-of-character table banter and dice mechanics in GitHub alert callouts (`> [!NOTE] Hors-jeu / Discussion`).
+  - **Safety Validation (`validate_refiner_chunk`)**: Strictly verifies that all turn headers match verbatim and word count delta remains <= 15%. If validation fails or the subprocess errors, falls back to the raw chunk.
 
 ### 2.8 Craig Multi-Track Processing Pipeline (`craig.py`)
 - **Track Discovery & Username Extraction**: Scans `recording_dir` matching `^(\d+)-(.*)\.flac$` sorted numerically by track index. Extracts Discord usernames directly from track file stems (e.g. `1-merrow1.flac` -> `merrow1`).
 - **Speaker Roster Parsing (`speakers.md`)**: Parses lines formatted as `* username: Character Name, Role, surnoms: (Nick1, Nick2)`. Detects Game Master roles (`is_dm`) via regex matching keywords (`MJ`, `DM`, `GM`, `Maître du Jeu`). Falls back to track username when unmapped.
 - **Recording Metadata Parsing (`info.txt`)**: Extracts guild, channel, start time, and registered Discord user IDs from Craig's metadata summary.
 - **Context-Aware Biasing Prompt**: Combines character names, nicknames, and Discord usernames with mined Obsidian lore (`vocab.py`), budgeted to 220 tokens to maximize transcription accuracy for fantasy terminology.
-- **Discrete Track Caching**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation checks track file mtime, size, model name, compute type, and prompt hash.
+- **Discrete Track Caching with VAD & Language**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation verifies file size, mtime, model, compute type, prompt hash, VAD filter (`vad_filter`), VAD parameters (`vad_parameters`), and transcription language (`language='fr'`).
 - **Chronological Segment Interleaving**: Interleaves multi-track segments using `merge_craig_tracks_to_turns()` sorted by `(seg.start, track_id)`. Bypasses acoustic diarization and clustering entirely because physical track separation provides exact speaker isolation.
 - **Debouncing & Refinement**: Seamlessly chains into `consolidator.py` (`debounce_consecutive_turns()`, `render_markdown_transcript()`) and optional `refiner.py` (`refine_transcript_markdown()`).
 
@@ -231,12 +229,15 @@ class TranscriptCacheFile(BaseModel):
 
 
 class DiarizationCacheProvenance(BaseModel):
-    schema_version: int = 1
+    version: int = 1
     media_hash: str
     engine: str
+    resolved_engine: str | None = None
     cluster_threshold: float
     num_speakers: int | None = None
     device: str = "cuda"
+    transcript_provenance_hash: str | None = None
+    created_at: str
 
 
 class DiarizationCacheFile(BaseModel):
@@ -244,21 +245,30 @@ class DiarizationCacheFile(BaseModel):
     turns: list[SpeakerTurn]
 
 
+class ClusterSplit(BaseModel):
+    cluster_id: str
+    at: float
+    new_cluster_id: str
+
+
 class SpeakersMapping(BaseModel):
     cluster_defaults: dict[str, str] = Field(default_factory=dict)
+    slice_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     turn_overrides: dict[int, str] = Field(default_factory=dict)
+    splits: list[ClusterSplit] = Field(default_factory=list)
+    label_sources: dict[str, str] = Field(default_factory=dict)
 
 
 class SessionMetadata(BaseModel):
-    session_id: str
-    audio_file: str
-    file_hash: str
+    media_path: str
+    media_hash: str
     duration_seconds: float
-    created_at: str
     engine: str
     model_name: str
-    time_slices_count: int
-    speakers_detected: list[str]
+    prompt_hash: str
+    time_slice_minutes: float
+    created_at: str
+    output_path: str = ""
 
 
 class SpeakerInfo(BaseModel):
@@ -275,7 +285,9 @@ class TrackCacheProvenance(BaseModel):
     model_name: str
     compute_type: str
     prompt_hash: str
+    vad_filter: bool = True
     vad_parameters: dict[str, Any] = Field(default_factory=dict)
+    language: str = "fr"
     source_file_size: int
     source_file_mtime: float
 
@@ -283,6 +295,15 @@ class TrackCacheProvenance(BaseModel):
 class TrackCacheFile(BaseModel):
     provenance: TrackCacheProvenance
     segments: list[RawSegment]
+
+
+class EmbeddingCacheProvenance(BaseModel):
+    version: int = 1
+    entity_kind: Literal["segment", "turn"]
+    media_hash: str
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb"
+    count: int
+    created_at: str
 ```
 
 ---
@@ -300,14 +321,18 @@ All single-stream session artifacts are stored inside `.a2ts/`:
 ├── transcripts/
 │   └── <sha256>_<engine>.json        # Provenance envelope + raw ASR segments
 ├── diarization/
-│   ├── <sha256>.json                 # Provenance envelope + diarization turns
+│   ├── <sha256>.json                 # DiarizationCacheFile (with transcript_provenance_hash)
 │   ├── <sha256>_turn_embeddings.npy  # Turn embeddings (192-dim, keyed by turn_id)
 │   ├── <sha256>_turn_indices.json    # Valid embedding turn IDs
+│   ├── <sha256>_turn_embeddings.meta.json # EmbeddingCacheProvenance
 │   ├── <sha256>_segment_embeddings.npy # Segment embeddings (keyed by seg.id)
-│   └── <sha256>_segment_indices.json # Valid segment IDs
-├── turns.json                        # AlignedTurn representation for session
-├── speakers_mapping.json             # Manual & automatic speaker resolutions
-└── session.json                      # Comprehensive provenance metadata
+│   ├── <sha256>_segment_indices.json # Valid segment IDs
+│   └── <sha256>_segment_embeddings.meta.json # EmbeddingCacheProvenance
+└── sessions/
+    └── <sha256>/
+        ├── turns.json                # AlignedTurn representation for session
+        ├── speakers_mapping.json     # Manual & automatic speaker resolutions, splits
+        └── session.json              # Session metadata & provenance
 ```
 
 ### 4.2 Craig Multi-Track Cache (`<recording_dir>/.transcripts/`)

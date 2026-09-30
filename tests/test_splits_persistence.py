@@ -275,9 +275,7 @@ def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
     # Mock diarization cache with 1D identical embeddings
     diar_dir = session_dir / "diarization"
     diar_dir.mkdir(parents=True)
-    emb_matrix = np.array(
-        [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=np.float32
-    )
+    emb_matrix = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
     np.save(diar_dir / f"{media_hash}_segment_embeddings.npy", emb_matrix)
     (diar_dir / f"{media_hash}_segment_indices.json").write_text(
         json.dumps([0, 1, 2]), encoding="utf-8"
@@ -359,9 +357,10 @@ def test_review_closed_set_skips_voice_profile_auto_enrollment(tmp_path: Path) -
 
     vp_path = tmp_path / "voice_profiles.json"
 
-    with patch("a2ts.cli.run_interactive_review", return_value=mapping), patch(
-        "a2ts.cli.save_voice_profiles"
-    ) as mock_save_vp:
+    with (
+        patch("a2ts.cli.run_interactive_review", return_value=mapping),
+        patch("a2ts.cli.save_voice_profiles") as mock_save_vp,
+    ):
         runner = CliRunner()
         result = runner.invoke(
             app,
@@ -377,4 +376,3 @@ def test_review_closed_set_skips_voice_profile_auto_enrollment(tmp_path: Path) -
         )
         assert result.exit_code == 0, f"Review failed: {result.stdout}"
         mock_save_vp.assert_not_called()
-

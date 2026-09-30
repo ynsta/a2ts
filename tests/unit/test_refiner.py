@@ -13,7 +13,7 @@ def test_normalize_rpg_phonetics() -> None:
     normalized = normalize_rpg_phonetics(text)
     assert "1d20" in normalized
     assert "2d6" in normalized
-    assert "jet de dés" in normalized
+    assert "jets de dés" in normalized
 
 
 def test_normalize_rpg_phonetics_variations() -> None:

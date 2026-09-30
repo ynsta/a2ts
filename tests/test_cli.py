@@ -877,7 +877,9 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
         diar_dir / "hash_closed_segment_embeddings.npy",
         np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
     )
-    (diar_dir / "hash_closed_segment_indices.json").write_text("[0, 1]", encoding="utf-8")
+    (diar_dir / "hash_closed_segment_indices.json").write_text(
+        "[0, 1]", encoding="utf-8"
+    )
 
     # Create voice profiles with 2D matching centroids
     vp_path = tmp_path / "profiles.json"
@@ -1012,7 +1014,10 @@ def test_craig_command_e2e_mocked(tmp_path: Path) -> None:
 
     # Verify debouncing: merrow1's two consecutive segments merged into a single turn [00:00:01 - 00:00:05]
     assert "### [00:00:01 - 00:00:05] Merrow Ashdale (merrow1)" in content
-    assert "Je lance 1d20 pour mon action. C'est un jet de dés pour la perception." in content
+    assert (
+        "Je lance 1d20 pour mon action. C'est un jet de dés pour la perception."
+        in content
+    )
 
     # Verify cache files were created in .transcripts
     cache_dir = rec_dir / ".transcripts"
@@ -1136,4 +1141,3 @@ def test_craig_command_caching_and_force(tmp_path: Path) -> None:
         res3 = runner.invoke(app, ["craig", str(rec_dir), "--force"])
         assert res3.exit_code == 0
         assert mock_engine.transcribe.call_count == 1
-

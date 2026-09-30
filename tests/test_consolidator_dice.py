@@ -11,8 +11,14 @@ runner = CliRunner()
 
 def test_french_speech_not_mangled() -> None:
     """Verify standard French phrases with 'des N' are never converted to dice notation."""
-    assert normalize_rpg_terms("c est une des dix merveilles") == "c est une des dix merveilles"
-    assert normalize_rpg_terms("il a eu deux des six votes") == "il a eu deux des six votes"
+    assert (
+        normalize_rpg_terms("c est une des dix merveilles")
+        == "c est une des dix merveilles"
+    )
+    assert (
+        normalize_rpg_terms("il a eu deux des six votes")
+        == "il a eu deux des six votes"
+    )
     assert (
         normalize_rpg_terms("trois des huit portes sont ouvertes")
         == "trois des huit portes sont ouvertes"
@@ -30,6 +36,7 @@ def test_actual_dice_rolls_normalized() -> None:
     assert normalize_rpg_terms("fais un jet de dés 20") == "fais un jet de 1d20"
     assert normalize_rpg_terms("il lance des dix") == "il lance 1d10"
     assert normalize_rpg_terms("un jet de délai") == "un jet de dés"
+    assert normalize_rpg_terms("des jets de délai") == "des jets de dés"
 
 
 def test_explicit_dice_notation_normalized() -> None:

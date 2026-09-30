@@ -73,18 +73,19 @@ uv run a2ts run session.mkv \
 If transcription has already completed and cached into `.a2ts/`, re-run speaker review and re-generate the transcript without touching GPU ASR:
 
 ```bash
-uv run a2ts review .a2ts/<media_hash> \
+uv run a2ts review .a2ts/sessions/<media_hash> \
   --voice-profiles contexte/voice_profiles.json \
   --speakers-file contexte/speakers.txt \
   --output transcript_reviewed.md
 ```
+*(Note: Passing `a2ts review .a2ts` or omitting the argument automatically resolves the most recent session in `.a2ts/sessions/`.)*
 
 ### 2.4 Re-Clustering with Adjusted Thresholds (`a2ts recluster`)
 If speakers were merged together (under-clustering) or split across too many labels (over-clustering), re-cluster the existing acoustic embeddings with a different distance threshold:
 
 ```bash
-uv run a2ts recluster .a2ts/<media_hash> \
-  --cluster-threshold 0.35 \
+uv run a2ts recluster .a2ts/sessions/<media_hash> \
+  --cluster-threshold 0.50 \
   --voice-profiles contexte/voice_profiles.json \
   --output transcript_recluster.md
 ```
@@ -93,8 +94,7 @@ uv run a2ts recluster .a2ts/<media_hash> \
 When a physical player switch causes a single speaker cluster (`SPEAKER_00`) to inadvertently encompass two voices starting at second `1840.0`:
 
 ```bash
-uv run a2ts split SPEAKER_00 1840.0 SPEAKER_04 \
-  --cache-dir .a2ts \
+uv run a2ts split .a2ts/sessions/<media_hash> SPEAKER_00 --at 1840.0 --to SPEAKER_04 \
   --output transcript_split.md
 ```
 
@@ -209,3 +209,19 @@ rm -rf recordings/session_01/.transcripts/
 ### 4.4 Tiktoken Name Resolution Error in Air-gapped / Sandbox Environments
 - **Symptom**: `requests.exceptions.ConnectionError` while loading `cl100k_base.tiktoken`.
 - **Fix**: `tiktoken` lazily downloads its BPE table on first import. Run `python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"` once with network access so the table is cached in `~/.cache/`.
+
+### 4.5 Air-Gapped and Offline Execution (`HF_HUB_OFFLINE=1`)
+`a2ts` runs completely offline once model weights and tokenizer files are cached locally:
+- **Set Offline Environment Variables**:
+  ```bash
+  export HF_HUB_OFFLINE=1
+  export TRANSFORMERS_OFFLINE=1
+  uv run a2ts run session.mp4
+  ```
+- **Pre-downloading Model Caches Before Disconnecting**:
+  Ensure required model weights are cached in `~/.cache/huggingface/` and `~/.cache/speechbrain/`:
+  - **Faster-Whisper**: `python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3')"`
+  - **Nemotron-3 Diarization**: `python -c "from transformers import AutoModelForAudioClassification; AutoModelForAudioClassification.from_pretrained('nvidia/Nemotron-3-Diarization')"`
+  - **SpeechBrain ECAPA-TDNN**: `python -c "from speechbrain.inference.speaker import EncoderClassifier; EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb')"`
+  - **Tiktoken BPE**: `python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"`
+- Note that optional `--refine` requires external CLI access to `agy` and will egress network traffic if configured with hosted models like Gemini. Keep `--refine` disabled (the default) for air-gapped operations.

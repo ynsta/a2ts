@@ -17,13 +17,13 @@ Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, 
 
 - **Single-Stream Audio Extraction**: Extracts audio automatically from any container format (`.mp4`, `.mkv`, `.flac`, `.wav`, `.mp3`) via `ffmpeg`.
 - **Discord Multi-Track Recordings (Craig Adapter)**: Native processing of multi-track Discord recordings via Craig (`a2ts craig`). Transcribes isolated per-user `.flac` tracks independently with track-level caching, extracts usernames and roles from `speakers.md` rosters, interleaves segments chronologically, and debounces dialogue without requiring acoustic diarization.
-- **Domain Lore & Vocabulary Biasing**: Ingests Obsidian / Markdown vaults and wordlists to bias Whisper transcription toward proper nouns, character names, and domain terminology.
+- **Domain Lore & Vocabulary Biasing**: Ingests Obsidian / Markdown vaults and wordlists to bias Whisper transcription toward proper nouns, character names, and domain terminology (token budget: 220 tokens, Whisper max 224 tokens).
 - **Dual Transcription Engines**:
   - **Faster-Whisper**: High-throughput CTranslate2 engine (`large-v3`, `turbo`) with word-level timestamps.
   - **Voxtral**: Hugging Face / Mistral multimodal audio LLM (experimental).
 - **Hybrid Acoustic Diarization & Persistent Voice Profiles**:
   - Continuous speech turn diarization with **NVIDIA Nemotron-3 Diarization** (CUDA) or **SpeechBrain ECAPA-TDNN** (CPU / CUDA).
-  - Cosine AgglomerativeClustering with customizable distance threshold (`--cluster-threshold`).
+  - Cosine AgglomerativeClustering with customizable distance threshold (`--cluster-threshold 0.60`).
   - Persistent speaker voice profiles (`voice_profiles.json`) with sample tracking and idempotent enrollment across sessions.
 - **Deterministic French RPG Normalization**: Automatic detection and normalization of tabletop RPG speech recognition artifacts (e.g. `lance un dé 20` $\to$ `lance 1d20`, `trois dés de six` $\to$ `3d6`, `jets-dés` $\to$ `jets de dés`) with exclusion guards for common nouns (`20 gardes`).
 - **Interactive Attribution Review & Re-Clustering**:
@@ -38,17 +38,18 @@ Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, 
 
 ## Privacy & Local Execution Boundary
 
-`a2ts` operates under a **strict local-first, zero-cloud data leak** boundary:
-- Media files, audio streams, and generated transcripts never leave your machine.
-- Speech transcription, acoustic diarization, embedding extraction, and clustering execute 100% locally on your CPU or GPU.
+`a2ts` operates under a **strict local-first, zero-cloud data leak** boundary for core inference:
+- Media files, audio streams, and generated transcripts never leave your machine during standard transcription and diarization.
+- Speech transcription (Faster-Whisper / Voxtral), acoustic diarization (Nemotron-3 / SpeechBrain ECAPA), embedding extraction, and clustering execute 100% locally on your CPU or GPU.
 - Hugging Face / CTranslate2 models are cached locally in your standard cache directories (`~/.cache/huggingface`, `~/.cache/speechbrain`).
-- The optional `--refine` step invokes your local `agy` CLI command.
+- **Remote Delegation Boundary (`--refine`)**: The optional `--refine` pass invokes the external `agy` CLI (`agy --model <model>`). When `agy` is configured with hosted models (such as Gemini, e.g. `gemini-3.8-flash-low`), transcript text is transmitted to the provider's API. A raw, unrefined transcript is always preserved on disk at `<output>.raw.md` before refinement. Users requiring strict air-gapped privacy should keep `--refine` disabled (the default) or use a local model backend with `agy`.
 
 ---
 
 ## Requirements
 
 - **Linux** (x86_64) or **macOS** (Apple Silicon)
+  - *macOS Note*: Faster-Whisper runs via CPU/Metal. NVIDIA CUDA libraries (`nvidia-cudnn-cu12`, etc.) are platform-gated in `pyproject.toml` and omitted automatically on macOS.
 - **Python**: `>= 3.13`
 - **System Tools**: `ffmpeg` must be installed and available in `$PATH`
 - **Hardware**:
@@ -102,16 +103,17 @@ uv run a2ts run session.mkv \
 | :--- | :--- | :--- |
 | `--engine` | `whisper` | Transcription engine: `whisper` or `voxtral` |
 | `--model-name` | `large-v3` | Model name or Hugging Face repository ID |
-| `--device` | `auto` | Device to run on: `auto`, `cuda`, or `cpu` |
+| `--device` | `cuda` | Device to run on: `cuda` or `cpu` |
 | `--compute-type` | `float16` | Precision: `float16`, `bfloat16`, `int8`, etc. |
 | `--diarizer-engine` | `auto` | Diarization engine: `auto`, `nemotron`, or `ecapa` |
-| `--cluster-threshold` | `0.30` | Cosine distance threshold for AgglomerativeClustering |
+| `--cluster-threshold` | `0.60` | Cosine distance threshold for AgglomerativeClustering |
 | `--num-speakers` | `None` | Pre-fixed speaker count (disables automatic clustering cutoff) |
-| `--context-dir` | `None` | Path to Obsidian vault or directory of Markdown context notes |
-| `--voice-profiles` | `None` | Path to persistent `voice_profiles.json` for enrollment/matching |
+| `--context-dir` | `contexte` | Path to Obsidian vault or directory of Markdown context notes |
+| `--voice-profiles` | `contexte/voice_profiles.json` | Path to persistent `voice_profiles.json` for enrollment/matching |
 | `--force` | `False` | Force re-running transcription/diarization, bypassing cached artifacts |
-| `--no-interactive` | `False` | Skip interactive terminal speaker review |
-| `--no-refine` | `False` | Skip local LLM refinement pass |
+| `--interactive / --no-interactive` | `True` | Interactive terminal speaker review |
+| `--refine / --no-refine` | `False` | Run LLM post-processing via `agy` CLI (remote delegation) |
+| `--refine-model` | `gemini-3.8-flash-low` | Model name for LLM refiner via `agy` CLI |
 
 ### 3. Transcribe Multi-Track Discord Recordings (Craig)
 

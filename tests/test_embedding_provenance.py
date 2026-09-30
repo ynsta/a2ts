@@ -39,7 +39,9 @@ def test_embedding_cache_provenance_model() -> None:
     assert dt.tzinfo is not None
 
 
-def test_segment_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: Path) -> None:
+def test_segment_embeddings_writes_canonical_and_provenance_no_legacy(
+    tmp_path: Path,
+) -> None:
     """Verify segment embeddings write _segment_* files and no legacy alias files."""
     segments = [
         RawSegment(id=0, start=0.0, end=1.0, text="One"),
@@ -50,7 +52,9 @@ def test_segment_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: 
     cache_prefix = tmp_path / "cache_hash"
 
     with (
-        patch("soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)),
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
         patch("a2ts.diarizer.get_embedding_model") as mock_model,
     ):
         mock_classifier = MagicMock()
@@ -61,7 +65,11 @@ def test_segment_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: 
         mock_model.return_value = mock_classifier
 
         emb_matrix, valid_indices = extract_embeddings_for_segments(
-            audio_path, segments, device="cpu", cache_prefix=cache_prefix, media_hash="test_media_hash"
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            media_hash="test_media_hash",
         )
 
         assert emb_matrix.shape == (2, 2)
@@ -78,14 +86,18 @@ def test_segment_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: 
         assert not (tmp_path / "cache_hash_indices.json").exists()
 
         # Validate provenance contents
-        prov = EmbeddingCacheProvenance.model_validate_json(prov_file.read_text(encoding="utf-8"))
+        prov = EmbeddingCacheProvenance.model_validate_json(
+            prov_file.read_text(encoding="utf-8")
+        )
         assert prov.version == 1
         assert prov.entity_kind == "segment"
         assert prov.media_hash == "test_media_hash"
         assert prov.count == 2
 
 
-def test_turn_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: Path) -> None:
+def test_turn_embeddings_writes_canonical_and_provenance_no_legacy(
+    tmp_path: Path,
+) -> None:
     """Verify turn embeddings write _turn_* files and no legacy alias files."""
     turns = [
         SpeakerTurn(id=0, start=0.0, end=1.0, cluster_id="SPEAKER_00"),
@@ -96,7 +108,9 @@ def test_turn_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: Pat
     cache_prefix = tmp_path / "turn_cache"
 
     with (
-        patch("soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)),
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
         patch("a2ts.diarizer.get_embedding_model") as mock_model,
     ):
         mock_classifier = MagicMock()
@@ -107,7 +121,11 @@ def test_turn_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: Pat
         mock_model.return_value = mock_classifier
 
         emb_matrix, valid_indices = extract_embeddings_for_turns(
-            audio_path, turns, device="cpu", cache_prefix=cache_prefix, media_hash="turn_media_hash"
+            audio_path,
+            turns,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            media_hash="turn_media_hash",
         )
 
         assert emb_matrix.shape == (2, 2)
@@ -124,7 +142,9 @@ def test_turn_embeddings_writes_canonical_and_provenance_no_legacy(tmp_path: Pat
         assert not (tmp_path / "turn_cache_indices.json").exists()
 
         # Validate provenance contents
-        prov = EmbeddingCacheProvenance.model_validate_json(prov_file.read_text(encoding="utf-8"))
+        prov = EmbeddingCacheProvenance.model_validate_json(
+            prov_file.read_text(encoding="utf-8")
+        )
         assert prov.version == 1
         assert prov.entity_kind == "turn"
         assert prov.media_hash == "turn_media_hash"
@@ -141,11 +161,16 @@ def test_legacy_alias_not_loaded_as_fallback(tmp_path: Path) -> None:
     cache_prefix = tmp_path / "legacy_test"
 
     # Create only legacy alias files
-    np.save(tmp_path / "legacy_test_embeddings.npy", np.array([[0.5, 0.5]], dtype=np.float32))
+    np.save(
+        tmp_path / "legacy_test_embeddings.npy",
+        np.array([[0.5, 0.5]], dtype=np.float32),
+    )
     (tmp_path / "legacy_test_indices.json").write_text("[0]", encoding="utf-8")
 
     with (
-        patch("soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)),
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
         patch("a2ts.diarizer.get_embedding_model") as mock_model,
     ):
         mock_classifier = MagicMock()
@@ -173,13 +198,22 @@ def test_force_invalidates_cache_and_reextracts(tmp_path: Path) -> None:
     cache_prefix = tmp_path / "force_test"
 
     # Pre-populate canonical cache
-    np.save(tmp_path / "force_test_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
+    np.save(
+        tmp_path / "force_test_segment_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
     (tmp_path / "force_test_segment_indices.json").write_text("[0]", encoding="utf-8")
-    prov = EmbeddingCacheProvenance(entity_kind="segment", media_hash="force_test", count=1)
-    (tmp_path / "force_test_segment_embeddings_provenance.json").write_text(prov.model_dump_json(), encoding="utf-8")
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment", media_hash="force_test", count=1
+    )
+    (tmp_path / "force_test_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     with (
-        patch("soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)),
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
         patch("a2ts.diarizer.get_embedding_model") as mock_model,
     ):
         mock_classifier = MagicMock()
@@ -211,13 +245,24 @@ def test_provenance_entity_kind_mismatch_invalidates_cache(tmp_path: Path) -> No
     cache_prefix = tmp_path / "mismatch_test"
 
     # Cache marked with wrong entity_kind "turn"
-    np.save(tmp_path / "mismatch_test_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
-    (tmp_path / "mismatch_test_segment_indices.json").write_text("[0]", encoding="utf-8")
-    prov = EmbeddingCacheProvenance(entity_kind="turn", media_hash="mismatch_test", count=1)
-    (tmp_path / "mismatch_test_segment_embeddings_provenance.json").write_text(prov.model_dump_json(), encoding="utf-8")
+    np.save(
+        tmp_path / "mismatch_test_segment_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    (tmp_path / "mismatch_test_segment_indices.json").write_text(
+        "[0]", encoding="utf-8"
+    )
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn", media_hash="mismatch_test", count=1
+    )
+    (tmp_path / "mismatch_test_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     with (
-        patch("soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)),
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
         patch("a2ts.diarizer.get_embedding_model") as mock_model,
     ):
         mock_classifier = MagicMock()
@@ -248,7 +293,9 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
         time_slice_minutes=15.0,
         created_at=datetime.now(UTC).isoformat(),
     )
-    (session_dir / "session.json").write_text(session_meta.model_dump_json(), encoding="utf-8")
+    (session_dir / "session.json").write_text(
+        session_meta.model_dump_json(), encoding="utf-8"
+    )
 
     # Transcripts cache
     transcripts_dir = session_dir / "transcripts"
@@ -261,7 +308,10 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
     # Put only legacy alias files in diarization dir
     diar_dir = session_dir / "diarization"
     diar_dir.mkdir()
-    np.save(diar_dir / f"{media_hash}_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
+    np.save(
+        diar_dir / f"{media_hash}_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
     (diar_dir / f"{media_hash}_indices.json").write_text("[0]", encoding="utf-8")
 
     # Recluster must reject legacy alias and exit with error
@@ -270,10 +320,17 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
     assert "Embeddings cache not found" in result.output
 
     # Now add canonical segment files
-    np.save(diar_dir / f"{media_hash}_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32))
-    (diar_dir / f"{media_hash}_segment_indices.json").write_text("[0]", encoding="utf-8")
+    np.save(
+        diar_dir / f"{media_hash}_segment_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    (diar_dir / f"{media_hash}_segment_indices.json").write_text(
+        "[0]", encoding="utf-8"
+    )
 
-    result2 = runner.invoke(app, ["recluster", str(session_dir), "--output", str(tmp_path / "out.md")])
+    result2 = runner.invoke(
+        app, ["recluster", str(session_dir), "--output", str(tmp_path / "out.md")]
+    )
     assert result2.exit_code == 0
     assert "Re-clustered" in result2.output
 
@@ -308,16 +365,18 @@ def test_cli_run_passes_force_to_embeddings(
 
     vp_file = tmp_path / "voice_profiles.json"
     vp_file.write_text(
-        json.dumps({
-            "version": 1,
-            "speakers": {
-                "Alice": {
-                    "speaker_name": "Alice",
-                    "centroid": [1.0, 0.0],
-                    "sample_count": 1,
-                }
+        json.dumps(
+            {
+                "version": 1,
+                "speakers": {
+                    "Alice": {
+                        "speaker_name": "Alice",
+                        "centroid": [1.0, 0.0],
+                        "sample_count": 1,
+                    }
+                },
             }
-        }),
+        ),
         encoding="utf-8",
     )
 
@@ -341,4 +400,3 @@ def test_cli_run_passes_force_to_embeddings(
     assert mock_extract_turns.called
     for call in mock_extract_turns.call_args_list:
         assert call.kwargs.get("force") is True
-

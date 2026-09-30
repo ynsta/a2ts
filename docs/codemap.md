@@ -32,7 +32,7 @@ src/a2ts/
 
 | File | Primary Responsibility | Key Functions / Classes | Downstream Dependents |
 | :--- | :--- | :--- | :--- |
-| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment`, `WordTimestamp`, `SpeakerTurn`, `AlignedTurn`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `ClusterSplit`, `SessionMetadata`, `TranscriptCacheFile`, `DiarizationCacheFile`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile` | All modules |
+| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment`, `WordTimestamp`, `SpeakerTurn`, `AlignedTurn`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `ClusterSplit`, `SessionMetadata`, `TranscriptCacheFile`, `DiarizationCacheFile`, `EmbeddingCacheProvenance`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile` | All modules |
 | [`cache.py`](../src/a2ts/cache.py) | Atomic cache storage & provenance validation | `atomic_write_text()`, `compute_prompt_hash()`, `save_transcript_cache()`, `load_transcript_cache()`, `save_diarization_cache()`, `load_diarization_cache()` | `cli.py`, `craig.py` |
 | [`cli.py`](../src/a2ts/cli.py) | Top-level CLI orchestration & UX | `app`, `run()`, `craig()`, `review()`, `recluster()`, `split()`, `extract_vocab()`, `info()` | End user CLI (`a2ts`) |
 | [`craig.py`](../src/a2ts/craig.py) | Craig multi-track discovery, parsing & interleaving | `discover_tracks()`, `parse_track_username()`, `parse_speakers_file()`, `parse_info_file()`, `find_speakers_file()`, `compute_track_provenance()`, `build_craig_prompt()`, `load_track_cache()`, `save_track_cache()`, `transcribe_craig_track()`, `merge_craig_tracks_to_turns()` | `cli.py`, `tests/` |
@@ -76,20 +76,25 @@ graph TD
 ```
 tests/
 ├── integration/
-│   └── test_pipeline_e2e.py    # End-to-end runs of the full CLI lifecycle
+│   └── test_pipeline_e2e.py        # End-to-end runs of the full CLI lifecycle
 ├── unit/
-│   ├── test_models.py          # Pydantic schema validation & serialization
-│   ├── test_cache.py           # Cache envelopes, provenance checks, atomic I/O
-│   ├── test_craig.py           # Craig track discovery, parsing, caching & merge turns
-│   ├── test_media.py           # ffprobe & ffmpeg extraction mocks
-│   ├── test_vocab.py           # Wikilinks, aliases, and tiktoken prompt limits
-│   ├── test_transcriber.py     # Whisper and Voxtral engine wrappers
-│   ├── test_diarizer.py        # Nemotron-3, ECAPA clustering, & turn embeddings
-│   ├── test_timeline.py        # Word alignment & time-slice cluster splitting
-│   ├── test_speaker_review.py  # Interactive QCM, label propagation & mappings
-│   ├── test_consolidator.py    # Contiguous turn debouncing, RPG normalization & Markdown
-│   └── test_refiner.py         # Prompt generation & agy subprocess safety guards
-├── test_cli.py                 # Comprehensive Typer runner CLI argument tests
-├── test_splits_persistence.py  # Split persistence, positional fallback & voice profile enrollment tests
-└── test_refiner_safety.py      # Refiner safety guards, turn chunking, header/length validation & raw markdown output
+│   ├── test_models.py              # Pydantic schema validation & serialization
+│   ├── test_cache.py               # Cache envelopes, provenance checks, atomic I/O
+│   ├── test_craig.py               # Craig track discovery, parsing, caching & merge turns
+│   ├── test_media.py               # ffprobe & ffmpeg extraction mocks
+│   ├── test_vocab.py               # Wikilinks, aliases, and tiktoken prompt limits
+│   ├── test_transcriber.py         # Whisper and Voxtral engine wrappers
+│   ├── test_diarizer.py            # Nemotron-3, ECAPA clustering, & turn embeddings
+│   ├── test_timeline.py            # Word alignment & time-slice cluster splitting
+│   ├── test_speaker_review.py      # Interactive QCM, label propagation & mappings
+│   ├── test_consolidator.py        # Contiguous turn debouncing, RPG normalization & Markdown
+│   └── test_refiner.py             # Prompt generation & agy subprocess safety guards
+├── test_cli.py                     # Comprehensive Typer runner CLI argument tests
+├── test_consolidator_dice.py       # French tabletop RPG dice normalization hardening
+├── test_diarization_provenance.py  # Diarization cache binding to transcript provenance
+├── test_embedding_provenance.py    # Embedding cache metadata, shape, and count validation
+├── test_packaging_and_perf.py      # Packaging, version pinning, and performance regression tests
+├── test_refiner_safety.py          # Refiner safety guards, turn chunking, header/length validation & raw markdown output
+├── test_session_scoping.py         # Session scoping under .a2ts/sessions/<media_hash>/
+└── test_splits_persistence.py      # Split persistence, positional fallback & voice profile enrollment tests
 ```

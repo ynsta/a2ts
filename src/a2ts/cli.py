@@ -272,7 +272,10 @@ def run(
     ] = "gemini-3.8-flash-low",
     force: Annotated[
         bool,
-        typer.Option("--force", help="Force re-transcription and re-diarization ignoring existing cache"),
+        typer.Option(
+            "--force",
+            help="Force re-transcription and re-diarization ignoring existing cache",
+        ),
     ] = False,
     rpg_normalize: Annotated[
         bool,
@@ -556,7 +559,8 @@ def run(
                 try:
                     embeddings = np.load(embeddings_npy)
                     valid_indices = [
-                        int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
+                        int(x)
+                        for x in json.loads(indices_json.read_text(encoding="utf-8"))
                     ]
                 except (OSError, ValueError, json.JSONDecodeError):
                     embeddings = np.empty((0, 0), dtype=np.float32)
@@ -895,7 +899,9 @@ def review(
                     if voice_profiles.is_file()
                     else None
                 )
-                turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(aligned_turns)
+                turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(
+                    aligned_turns
+                )
                 db = compute_voice_profiles(
                     embeddings,
                     valid_indices,
@@ -947,9 +953,7 @@ def split(
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
-    mapping.splits.append(
-        ClusterSplit(cluster_id=cluster_id, at=at, new_cluster_id=to)
-    )
+    mapping.splits.append(ClusterSplit(cluster_id=cluster_id, at=at, new_cluster_id=to))
     save_speakers_mapping(mapping, mapping_path)
 
     updated_turns = apply_splits_to_turns(turns, mapping.splits)
@@ -1247,9 +1251,7 @@ def craig(
     recording_dir: Annotated[
         Path, typer.Argument(help="Path to folder containing Craig .flac tracks")
     ],
-    model_name: Annotated[
-        str, typer.Option(help="Whisper model name")
-    ] = "large-v3",
+    model_name: Annotated[str, typer.Option(help="Whisper model name")] = "large-v3",
     device: Annotated[
         str, typer.Option(help="Device to run inference on (auto/cuda/cpu)")
     ] = "auto",
@@ -1269,7 +1271,8 @@ def craig(
         float, typer.Option(help="Debounce window in seconds for consecutive turns")
     ] = 2.0,
     force: Annotated[
-        bool, typer.Option("--force", help="Force re-transcription ignoring existing cache")
+        bool,
+        typer.Option("--force", help="Force re-transcription ignoring existing cache"),
     ] = False,
     rpg_normalize: Annotated[
         bool,
@@ -1316,7 +1319,9 @@ def craig(
         )
         raise typer.Exit(code=1)
 
-    console.print(f"[bold]Discovered {len(tracks)} audio tracks in {recording_dir}[/bold]")
+    console.print(
+        f"[bold]Discovered {len(tracks)} audio tracks in {recording_dir}[/bold]"
+    )
 
     # 2. Locate and parse speakers.md via find_speakers_file and parse_speakers_file
     spk_path = find_speakers_file(recording_dir, speakers_file)
@@ -1328,13 +1333,17 @@ def craig(
     if speakers:
         console.print(f"[green]Loaded {len(speakers)} speakers from {spk_path}[/green]")
     else:
-        console.print("[yellow]No speakers roster file found; using track usernames.[/yellow]")
+        console.print(
+            "[yellow]No speakers roster file found; using track usernames.[/yellow]"
+        )
 
     # 3. Locate and parse info.txt via parse_info_file if present
     info_path = recording_dir / "info.txt"
     if info_path.is_file():
         info_data = parse_info_file(info_path)
-        console.print(f"[cyan]Loaded info.txt metadata ({len(info_data.get('tracks', []))} tracks registered)[/cyan]")
+        console.print(
+            f"[cyan]Loaded info.txt metadata ({len(info_data.get('tracks', []))} tracks registered)[/cyan]"
+        )
     else:
         info_data = None
 
@@ -1431,4 +1440,3 @@ def craig(
 
 if __name__ == "__main__":
     app()
-

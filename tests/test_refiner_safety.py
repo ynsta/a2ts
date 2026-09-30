@@ -136,7 +136,9 @@ def test_validate_refiner_chunk_word_count_tolerance() -> None:
 
     # Truncated (30% dropped words): rejected
     kept_words = int(orig_total_words * 0.70)
-    refined_truncated = header + " ".join(body_words[: kept_words - len(header.split())])
+    refined_truncated = header + " ".join(
+        body_words[: kept_words - len(header.split())]
+    )
     assert validate_refiner_chunk(orig, refined_truncated) is False
 
     # Empty text validation
@@ -181,7 +183,9 @@ def test_refine_transcript_markdown_chunking_and_timeout() -> None:
         # Return valid refined chunk preserving header
         chunk_lines = input.split("Voici la transcription brute:\n\n")[-1].strip()
         mock = MagicMock()
-        mock.stdout = chunk_lines.replace("un dé vingt", "1d20").replace("deux dés six", "2d6")
+        mock.stdout = chunk_lines.replace("un dé vingt", "1d20").replace(
+            "deux dés six", "2d6"
+        )
         return mock
 
     with (
@@ -237,7 +241,10 @@ def test_cli_craig_writes_raw_markdown_on_refine(tmp_path: Path) -> None:
     assert result.exit_code == 0
     mock_refine.assert_called_once()
     # Console notice check
-    assert "Refining transcript via agy CLI model 'custom-llm' (external LLM)..." in result.stdout
+    assert (
+        "Refining transcript via agy CLI model 'custom-llm' (external LLM)..."
+        in result.stdout
+    )
     # Raw file must exist and have unrefined content
     assert expected_raw_file.is_file()
     raw_content = expected_raw_file.read_text(encoding="utf-8")
@@ -294,7 +301,10 @@ def test_cli_run_writes_raw_markdown_on_refine(tmp_path: Path) -> None:
     assert result.exit_code == 0
     mock_refine.assert_called_once()
     # Console notice check
-    assert "Refining transcript via agy CLI model 'gemini-3.8-flash-low' (external LLM)..." in result.stdout
+    assert (
+        "Refining transcript via agy CLI model 'gemini-3.8-flash-low' (external LLM)..."
+        in result.stdout
+    )
     # Raw file must exist and have unrefined content
     assert expected_raw_file.is_file()
     raw_content = expected_raw_file.read_text(encoding="utf-8")

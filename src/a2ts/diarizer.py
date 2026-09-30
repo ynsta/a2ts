@@ -210,7 +210,12 @@ def extract_embeddings_for_segments(
                             prov.entity_kind,
                         )
                         valid = False
-                except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+                except (
+                    OSError,
+                    ValueError,
+                    ValidationError,
+                    json.JSONDecodeError,
+                ) as exc:
                     logger.debug(
                         "Failed to validate segment embedding cache provenance %s: %s",
                         prov_file,
@@ -329,7 +334,12 @@ def extract_embeddings_for_turns(
                             prov.entity_kind,
                         )
                         valid = False
-                except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+                except (
+                    OSError,
+                    ValueError,
+                    ValidationError,
+                    json.JSONDecodeError,
+                ) as exc:
                     logger.debug(
                         "Failed to validate turn embedding cache provenance %s: %s",
                         prov_file,

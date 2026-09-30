@@ -432,14 +432,18 @@ def test_transcribe_craig_track_caching(tmp_path: Path) -> None:
     )
 
     class MockWord:
-        def __init__(self, word: str, start: float, end: float, probability: float = 1.0) -> None:
+        def __init__(
+            self, word: str, start: float, end: float, probability: float = 1.0
+        ) -> None:
             self.word = word
             self.start = start
             self.end = end
             self.probability = probability
 
     class MockSegment:
-        def __init__(self, start: float, end: float, text: str, words: list[MockWord]) -> None:
+        def __init__(
+            self, start: float, end: float, text: str, words: list[MockWord]
+        ) -> None:
             self.start = start
             self.end = end
             self.text = text
@@ -547,7 +551,9 @@ def test_merge_craig_tracks_to_turns() -> None:
         # Track 1: out of chronological order
         (
             "1-merrow1",
-            RawSegment(id=10, start=10.0, end=12.0, text="Je fouille la pièce.", words=[]),
+            RawSegment(
+                id=10, start=10.0, end=12.0, text="Je fouille la pièce.", words=[]
+            ),
         ),
         (
             "1-merrow1",
@@ -625,7 +631,9 @@ def test_merge_craig_tracks_empty_and_edge_cases() -> None:
     assert merge_craig_tracks_to_turns([], {}) == []
 
     speakers = {
-        "alice": SpeakerInfo(discord_username="alice", character_name="Alice", is_dm=False),
+        "alice": SpeakerInfo(
+            discord_username="alice", character_name="Alice", is_dm=False
+        ),
     }
 
     # Same start timestamp tie-breaking by track_id
@@ -698,5 +706,3 @@ def test_merge_craig_tracks_downstream_compatibility() -> None:
     assert "Je lance 1d20." in markdown
     assert "### [00:00:05 - 00:00:07] MJ (tessaro)" in markdown
     assert "C'est réussi !" in markdown
-
-

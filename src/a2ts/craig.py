@@ -87,7 +87,9 @@ def parse_speakers_file(path: Path) -> dict[str, SpeakerInfo]:
 
         # Parse nicknames if present (e.g. surnoms: (Mimi, Mi))
         nicknames: list[str] = []
-        nick_match = re.search(r",?\s*surnoms?:\s*(?:\(([^)]+)\)|(.+)$)", desc, re.IGNORECASE)
+        nick_match = re.search(
+            r",?\s*surnoms?:\s*(?:\(([^)]+)\)|(.+)$)", desc, re.IGNORECASE
+        )
         if nick_match:
             raw_nicks = nick_match.group(1) or nick_match.group(2) or ""
             nicknames = [n.strip() for n in raw_nicks.split(",") if n.strip()]
@@ -201,7 +203,9 @@ def parse_info_file(path: Path) -> dict[str, Any]:
     return result
 
 
-def find_speakers_file(recording_dir: Path, custom_path: Path | None = None) -> Path | None:
+def find_speakers_file(
+    recording_dir: Path, custom_path: Path | None = None
+) -> Path | None:
     """Find speakers.md in custom path, recording dir, parent dir, or current working dir."""
     if custom_path is not None:
         resolved = custom_path.resolve()
@@ -417,10 +421,16 @@ def merge_craig_tracks_to_turns(
 
         if speaker_info is not None:
             if speaker_info.is_dm:
-                char_name = speaker_info.character_name if speaker_info.character_name else "MJ"
+                char_name = (
+                    speaker_info.character_name if speaker_info.character_name else "MJ"
+                )
                 label = f"{char_name} ({speaker_info.discord_username or username})"
             else:
-                char_name = speaker_info.character_name or speaker_info.discord_username or username
+                char_name = (
+                    speaker_info.character_name
+                    or speaker_info.discord_username
+                    or username
+                )
                 label = f"{char_name} ({speaker_info.discord_username or username})"
         else:
             label = username
@@ -442,5 +452,3 @@ def merge_craig_tracks_to_turns(
 
 # Alias for backwards compatibility / shorthand
 transcribe_track = transcribe_craig_track
-
-
