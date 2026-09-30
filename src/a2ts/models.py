@@ -109,6 +109,13 @@ class TranscriptCacheProvenance(BaseModel):
     prompt_hash: str = "no_prompt"
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
+    def compute_hash(self) -> str:
+        """Compute deterministic SHA-256 digest of settings (excluding created_at)."""
+        import hashlib
+
+        payload = self.model_dump_json(exclude={"created_at"}).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
 
 class TranscriptCacheFile(BaseModel):
     """Versioned storage file for raw transcription segments."""
@@ -123,9 +130,11 @@ class DiarizationCacheProvenance(BaseModel):
     version: int = 1
     media_hash: str
     engine: str
+    resolved_engine: str | None = None
     cluster_threshold: float
     num_speakers: int | None = None
     device: str = "cuda"
+    transcript_provenance_hash: str | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -175,4 +184,3 @@ class EmbeddingCacheProvenance(BaseModel):
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb"
     count: int
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
-

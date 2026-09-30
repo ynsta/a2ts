@@ -72,6 +72,11 @@ def load_transcript_cache(
         return None
 
 
+def compute_transcript_provenance_hash(provenance: TranscriptCacheProvenance) -> str:
+    """Compute deterministic SHA-256 digest of transcript provenance settings."""
+    return provenance.compute_hash()
+
+
 def save_diarization_cache(
     cache_path: Path,
     provenance: DiarizationCacheProvenance,
@@ -103,6 +108,15 @@ def load_diarization_cache(
             and p.cluster_threshold == expected_provenance.cluster_threshold
             and p.num_speakers == expected_provenance.num_speakers
             and p.device == expected_provenance.device
+            and (
+                expected_provenance.resolved_engine is None
+                or p.resolved_engine == expected_provenance.resolved_engine
+            )
+            and (
+                expected_provenance.transcript_provenance_hash is None
+                or p.transcript_provenance_hash
+                == expected_provenance.transcript_provenance_hash
+            )
         ):
             return cached.turns
         return None

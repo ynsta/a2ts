@@ -97,7 +97,13 @@ def diarize_nemotron(
             )
             try:
                 cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return [SpeakerTurn.model_validate(item) for item in cached_data]
+                if isinstance(cached_data, dict) and "turns" in cached_data:
+                    return [
+                        SpeakerTurn.model_validate(item)
+                        for item in cached_data["turns"]
+                    ]
+                elif isinstance(cached_data, list):
+                    return [SpeakerTurn.model_validate(item) for item in cached_data]
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
 
@@ -137,17 +143,20 @@ def diarize_nemotron(
     )
 
     if cache_path:
-        if provenance is not None:
-            save_diarization_cache(cache_path, provenance, speaker_turns)
-        else:
-            atomic_write_text(
-                cache_path,
-                json.dumps(
-                    [t.model_dump() for t in speaker_turns],
-                    indent=2,
-                    ensure_ascii=False,
-                ),
+        prov = (
+            provenance.model_copy(
+                update={"resolved_engine": provenance.resolved_engine or "nemotron"}
             )
+            if provenance is not None
+            else DiarizationCacheProvenance(
+                media_hash=audio_path.stem,
+                engine="nemotron",
+                resolved_engine="nemotron",
+                cluster_threshold=0.6,
+                device=device,
+            )
+        )
+        save_diarization_cache(cache_path, prov, speaker_turns)
 
     return speaker_turns
 
@@ -442,7 +451,13 @@ def diarize_segments(
             )
             try:
                 cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
-                return [SpeakerTurn.model_validate(item) for item in cached_data]
+                if isinstance(cached_data, dict) and "turns" in cached_data:
+                    return [
+                        SpeakerTurn.model_validate(item)
+                        for item in cached_data["turns"]
+                    ]
+                elif isinstance(cached_data, list):
+                    return [SpeakerTurn.model_validate(item) for item in cached_data]
             except (json.JSONDecodeError, OSError, ValueError) as exc:
                 logger.debug("Failed to read diarization cache %s: %s", cache_path, exc)
 
@@ -469,22 +484,38 @@ def diarize_segments(
                 "Nemotron-3 diarization failed (%s), falling back to SpeechBrain ECAPA.",
                 exc,
             )
+            if provenance is not None:
+                provenance = provenance.model_copy(update={"resolved_engine": "ecapa"})
 
-    if len(segments) == 1:
-        single_turn = [
-            SpeakerTurn(
-                id=0,
-                start=segments[0].start,
-                end=segments[0].end,
-                cluster_id="SPEAKER_00",
-            )
-        ]
+    if len(segments) <= 1:
+        single_turn = (
+            [
+                SpeakerTurn(
+                    id=0,
+                    start=segments[0].start,
+                    end=segments[0].end,
+                    cluster_id="SPEAKER_00",
+                )
+            ]
+            if len(segments) == 1
+            else []
+        )
         if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_text(
-                json.dumps([t.model_dump() for t in single_turn], indent=2),
-                encoding="utf-8",
+            prov = (
+                provenance.model_copy(
+                    update={"resolved_engine": provenance.resolved_engine or "ecapa"}
+                )
+                if provenance is not None
+                else DiarizationCacheProvenance(
+                    media_hash=audio_path.stem,
+                    engine=engine,
+                    resolved_engine="ecapa",
+                    cluster_threshold=distance_threshold,
+                    num_speakers=num_speakers,
+                    device=device,
+                )
             )
+            save_diarization_cache(cache_path, prov, single_turn)
         return single_turn
 
     emb_matrix, valid_indices = extract_embeddings(
@@ -501,6 +532,22 @@ def diarize_segments(
             SpeakerTurn(id=i, start=s.start, end=s.end, cluster_id="SPEAKER_00")
             for i, s in enumerate(segments)
         ]
+        if cache_path:
+            prov = (
+                provenance.model_copy(
+                    update={"resolved_engine": provenance.resolved_engine or "ecapa"}
+                )
+                if provenance is not None
+                else DiarizationCacheProvenance(
+                    media_hash=audio_path.stem,
+                    engine=engine,
+                    resolved_engine="ecapa",
+                    cluster_threshold=distance_threshold,
+                    num_speakers=num_speakers,
+                    device=device,
+                )
+            )
+            save_diarization_cache(cache_path, prov, turns)
         return turns
 
     # Perform Agglomerative Clustering
@@ -561,17 +608,21 @@ def diarize_segments(
     )
 
     if cache_path:
-        if provenance is not None:
-            save_diarization_cache(cache_path, provenance, speaker_turns)
-        else:
-            atomic_write_text(
-                cache_path,
-                json.dumps(
-                    [t.model_dump() for t in speaker_turns],
-                    indent=2,
-                    ensure_ascii=False,
-                ),
+        prov = (
+            provenance.model_copy(
+                update={"resolved_engine": provenance.resolved_engine or "ecapa"}
             )
+            if provenance is not None
+            else DiarizationCacheProvenance(
+                media_hash=audio_path.stem,
+                engine=engine,
+                resolved_engine="ecapa",
+                cluster_threshold=distance_threshold,
+                num_speakers=num_speakers,
+                device=device,
+            )
+        )
+        save_diarization_cache(cache_path, prov, speaker_turns)
 
     return speaker_turns
 

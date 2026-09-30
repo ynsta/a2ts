@@ -15,6 +15,7 @@ from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyp
 from a2ts.cache import (
     atomic_write_text,
     compute_prompt_hash,
+    compute_transcript_provenance_hash,
     load_transcript_cache,
     save_transcript_cache,
 )
@@ -340,12 +341,32 @@ def run(
     diarization_dir.mkdir(parents=True, exist_ok=True)
     diar_cache = diarization_dir / f"{file_hash}.json"
 
+    resolved_diarizer_engine: str
+    if diarizer_engine == "auto":
+        is_cuda_avail = False
+        if device == "cuda":
+            try:
+                import torch
+
+                is_cuda_avail = torch.cuda.is_available()
+            except ImportError:
+                is_cuda_avail = False
+        resolved_diarizer_engine = "nemotron" if is_cuda_avail else "ecapa"
+    else:
+        resolved_diarizer_engine = diarizer_engine
+
+    transcript_prov_hash: str | None = None
+    if resolved_diarizer_engine == "ecapa" or diarizer_engine == "ecapa":
+        transcript_prov_hash = compute_transcript_provenance_hash(trans_prov)
+
     diar_prov = DiarizationCacheProvenance(
         media_hash=file_hash,
         engine=diarizer_engine,
+        resolved_engine=resolved_diarizer_engine,
         cluster_threshold=cluster_threshold,
         num_speakers=num_speakers,
         device=device,
+        transcript_provenance_hash=transcript_prov_hash,
     )
 
     if diarize:
