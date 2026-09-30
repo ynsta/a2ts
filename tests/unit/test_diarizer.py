@@ -119,8 +119,11 @@ def test_extract_embeddings_caches_to_npy(tmp_path: Path) -> None:
 
         assert emb_matrix.shape == (2, 2)
         assert valid_indices == [0, 1]
-        assert (tmp_path / "test_emb_embeddings.npy").is_file()
-        assert (tmp_path / "test_emb_indices.json").is_file()
+        assert (tmp_path / "test_emb_segment_embeddings.npy").is_file()
+        assert (tmp_path / "test_emb_segment_indices.json").is_file()
+        assert (tmp_path / "test_emb_segment_embeddings_provenance.json").is_file()
+        assert not (tmp_path / "test_emb_embeddings.npy").exists()
+        assert not (tmp_path / "test_emb_indices.json").exists()
 
         # Second call should load from cache without calling get_embedding_model
         mock_model.reset_mock()
@@ -584,6 +587,10 @@ def test_extract_embeddings_for_turns(
     assert emb_matrix.shape == (2, 2)
     # Norm check: [3, 4] normalized is [0.6, 0.8]
     assert np.allclose(np.linalg.norm(emb_matrix, axis=1), 1.0)
-    assert Path(f"{cache_prefix}_embeddings.npy").is_file()
-    assert Path(f"{cache_prefix}_indices.json").is_file()
+    assert Path(f"{cache_prefix}_turn_embeddings.npy").is_file()
+    assert Path(f"{cache_prefix}_turn_indices.json").is_file()
+    assert Path(f"{cache_prefix}_turn_embeddings_provenance.json").is_file()
+    assert not Path(f"{cache_prefix}_embeddings.npy").exists()
+    assert not Path(f"{cache_prefix}_indices.json").exists()
+
 

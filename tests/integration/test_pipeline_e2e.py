@@ -182,8 +182,11 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     dummy_engine1.transcribe.return_value = session1_segments
     mock_get_engine.return_value = dummy_engine1
 
-    # In Run 1, seg 0 -> brakk, seg 1 -> oskel, seg 2 -> brakk
+    # In Run 1, seg 0 -> brakk, seg 1 -> oskel, seg 2 -> brakk (segments, then turns)
     mock_classifier.encode_batch.side_effect = [
+        torch.tensor(emb_brakk).unsqueeze(0),
+        torch.tensor(emb_than).unsqueeze(0),
+        torch.tensor(emb_brakk).unsqueeze(0),
         torch.tensor(emb_brakk).unsqueeze(0),
         torch.tensor(emb_than).unsqueeze(0),
         torch.tensor(emb_brakk).unsqueeze(0),
@@ -233,10 +236,10 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     assert mapping1.cluster_defaults.get("SPEAKER_00") == "Brakk"
 
     # Verify embeddings cache files exist
-    diar_files = list((session1_cache / "diarization").glob("*_embeddings.npy"))
-    assert len(diar_files) >= 1
-    idx_files = list((session1_cache / "diarization").glob("*_indices.json"))
-    assert len(idx_files) >= 1
+    turn_files = list((session1_cache / "diarization").glob("*_turn_embeddings.npy"))
+    assert len(turn_files) >= 1
+    seg_files = list((session1_cache / "diarization").glob("*_segment_embeddings.npy"))
+    assert len(seg_files) >= 1
 
     # --- RUN 2: Voice profile pre-matches without manual prompt ---
     session2_segments = [
@@ -272,8 +275,10 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
     dummy_engine2.transcribe.return_value = session2_segments
     mock_get_engine.return_value = dummy_engine2
 
-    # In Run 2, seg 0 has Brakk's embedding, seg 1 has other embedding
+    # In Run 2, seg 0 has Brakk's embedding, seg 1 has other embedding (segments, then turns)
     mock_classifier.encode_batch.side_effect = [
+        torch.tensor(emb_brakk).unsqueeze(0),
+        torch.tensor(emb_other).unsqueeze(0),
         torch.tensor(emb_brakk).unsqueeze(0),
         torch.tensor(emb_other).unsqueeze(0),
     ]

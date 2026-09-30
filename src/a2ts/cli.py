@@ -393,16 +393,10 @@ def run(
         loaded_db = load_voice_profiles(voice_profiles)
         embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
         indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-        if not (embeddings_npy.is_file() and indices_json.is_file()):
-            old_e = diarization_dir / f"{file_hash}_embeddings.npy"
-            old_i = diarization_dir / f"{file_hash}_indices.json"
-            if old_e.is_file() and old_i.is_file():
-                embeddings_npy = old_e
-                indices_json = old_i
         if (
             loaded_db
             and loaded_db.speakers
-            and (not embeddings_npy.is_file() or not indices_json.is_file())
+            and (not embeddings_npy.is_file() or not indices_json.is_file() or force)
             and speaker_turns
             and audio_path.is_file()
         ):
@@ -411,12 +405,10 @@ def run(
                 turns=speaker_turns,
                 device=device,
                 cache_prefix=diarization_dir / file_hash,
+                force=force,
             )
             embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
             indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-            if not (embeddings_npy.is_file() and indices_json.is_file()):
-                embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
-                indices_json = diarization_dir / f"{file_hash}_indices.json"
         if (
             loaded_db
             and loaded_db.speakers
@@ -500,16 +492,13 @@ def run(
     if diarize:
         embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
         indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-        if not (embeddings_npy.is_file() and indices_json.is_file()):
-            embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
-            indices_json = diarization_dir / f"{file_hash}_indices.json"
         has_named_speakers = any(
             not v.startswith("SPEAKER_") for v in mapping.cluster_defaults.values()
         ) or any(
             not v.startswith("SPEAKER_") for v in mapping.turn_overrides.values()
         )
         if (
-            (not embeddings_npy.is_file() or not indices_json.is_file())
+            (not embeddings_npy.is_file() or not indices_json.is_file() or force)
             and speaker_turns
             and has_named_speakers
             and audio_path.is_file()
@@ -519,12 +508,10 @@ def run(
                 turns=speaker_turns,
                 device=device,
                 cache_prefix=diarization_dir / file_hash,
+                force=force,
             )
             embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
             indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-            if not (embeddings_npy.is_file() and indices_json.is_file()):
-                embeddings_npy = diarization_dir / f"{file_hash}_embeddings.npy"
-                indices_json = diarization_dir / f"{file_hash}_indices.json"
         if embeddings_npy.is_file() and indices_json.is_file():
             try:
                 embeddings = np.load(embeddings_npy)
@@ -740,9 +727,6 @@ def review(
     if media_hash:
         e_path = diarization_dir / f"{media_hash}_turn_embeddings.npy"
         i_path = diarization_dir / f"{media_hash}_turn_indices.json"
-        if not (e_path.is_file() and i_path.is_file()):
-            e_path = diarization_dir / f"{media_hash}_embeddings.npy"
-            i_path = diarization_dir / f"{media_hash}_indices.json"
         if e_path.is_file() and i_path.is_file():
             embeddings_npy = e_path
             indices_json = i_path
@@ -754,14 +738,6 @@ def review(
                 embeddings_npy = e_file
                 indices_json = i_file
                 break
-        if embeddings_npy is None:
-            for e_file in sorted(diarization_dir.glob("*_embeddings.npy")):
-                prefix = e_file.name.removesuffix("_embeddings.npy")
-                i_file = diarization_dir / f"{prefix}_indices.json"
-                if i_file.is_file():
-                    embeddings_npy = e_file
-                    indices_json = i_file
-                    break
 
     loaded_vp: VoiceProfilesDatabase | None = None
     if voice_profiles.is_file():
@@ -1043,9 +1019,6 @@ def recluster(
         diarization_dir = cache_root / "diarization"
     embeddings_npy = diarization_dir / f"{media_hash}_segment_embeddings.npy"
     indices_json = diarization_dir / f"{media_hash}_segment_indices.json"
-    if not (embeddings_npy.is_file() and indices_json.is_file()):
-        embeddings_npy = diarization_dir / f"{media_hash}_embeddings.npy"
-        indices_json = diarization_dir / f"{media_hash}_indices.json"
 
     if not (embeddings_npy.is_file() and indices_json.is_file()):
         found = False
@@ -1058,15 +1031,6 @@ def recluster(
                     indices_json = i_file
                     found = True
                     break
-            if not found:
-                for e_file in sorted(diarization_dir.glob("*_embeddings.npy")):
-                    prefix = e_file.name.removesuffix("_embeddings.npy")
-                    i_file = diarization_dir / f"{prefix}_indices.json"
-                    if i_file.is_file():
-                        embeddings_npy = e_file
-                        indices_json = i_file
-                        found = True
-                        break
         if not found:
             console.print(
                 f"[bold red]Embeddings cache not found at {embeddings_npy}[/bold red]"

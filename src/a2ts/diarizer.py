@@ -30,6 +30,7 @@ from a2ts.cache import (
 from a2ts.models import (
     AlignedTurn,
     DiarizationCacheProvenance,
+    EmbeddingCacheProvenance,
     RawSegment,
     SpeakersMapping,
     SpeakerTurn,
@@ -174,36 +175,51 @@ def get_embedding_model(device: str = "cuda") -> Any:
     return _CLASSIFIER
 
 
-def extract_embeddings(
+def extract_embeddings_for_segments(
     audio_path: Path,
     segments: list[RawSegment],
     device: str = "cuda",
     cache_prefix: Path | None = None,
+    force: bool = False,
+    media_hash: str = "",
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speech segments."""
-    if cache_prefix is not None:
-        emb_file = (
-            Path(f"{cache_prefix}_segment_embeddings.npy")
-            if Path(f"{cache_prefix}_segment_embeddings.npy").is_file()
-            else Path(f"{cache_prefix}_embeddings.npy")
-        )
-        idx_file = (
-            Path(f"{cache_prefix}_segment_indices.json")
-            if Path(f"{cache_prefix}_segment_indices.json").is_file()
-            else Path(f"{cache_prefix}_indices.json")
-        )
+    if cache_prefix is not None and not force:
+        emb_file = Path(f"{cache_prefix}_segment_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_segment_indices.json")
+        prov_file = Path(f"{cache_prefix}_segment_embeddings_provenance.json")
         if emb_file.is_file() and idx_file.is_file():
-            console.print(
-                f"[bold cyan]Loading cached embeddings from {emb_file}...[/bold cyan]"
-            )
-            try:
-                emb_matrix = np.load(emb_file)
-                cached_indices = [
-                    int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
-                ]
-                return emb_matrix, cached_indices
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                logger.debug("Failed to read embedding cache %s: %s", emb_file, exc)
+            valid = True
+            if prov_file.is_file():
+                try:
+                    prov = EmbeddingCacheProvenance.model_validate_json(
+                        prov_file.read_text(encoding="utf-8")
+                    )
+                    if prov.entity_kind != "segment":
+                        logger.warning(
+                            "Segment embedding cache provenance mismatch: expected 'segment', got '%s'",
+                            prov.entity_kind,
+                        )
+                        valid = False
+                except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "Failed to validate segment embedding cache provenance %s: %s",
+                        prov_file,
+                        exc,
+                    )
+                    valid = False
+            if valid:
+                console.print(
+                    f"[bold cyan]Loading cached embeddings from {emb_file}...[/bold cyan]"
+                )
+                try:
+                    emb_matrix = np.load(emb_file)
+                    cached_indices = [
+                        int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+                    ]
+                    return emb_matrix, cached_indices
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    logger.debug("Failed to read embedding cache %s: %s", emb_file, exc)
 
     if not segments:
         return np.empty((0, 0), dtype=np.float32), []
@@ -260,13 +276,22 @@ def extract_embeddings(
     if cache_prefix is not None:
         emb_file = Path(f"{cache_prefix}_segment_embeddings.npy")
         idx_file = Path(f"{cache_prefix}_segment_indices.json")
+        prov_file = Path(f"{cache_prefix}_segment_embeddings_provenance.json")
         emb_file.parent.mkdir(parents=True, exist_ok=True)
         np.save(emb_file, emb_matrix)
         atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
-        np.save(Path(f"{cache_prefix}_embeddings.npy"), emb_matrix)
-        atomic_write_text(Path(f"{cache_prefix}_indices.json"), json.dumps(valid_indices, indent=2))
+        resolved_media_hash = media_hash or cache_prefix.name
+        prov = EmbeddingCacheProvenance(
+            entity_kind="segment",
+            media_hash=resolved_media_hash,
+            count=len(valid_indices),
+        )
+        atomic_write_text(prov_file, prov.model_dump_json(indent=2))
 
     return emb_matrix, valid_indices
+
+
+extract_embeddings = extract_embeddings_for_segments
 
 
 def extract_embeddings_for_turns(
@@ -274,33 +299,48 @@ def extract_embeddings_for_turns(
     turns: Sequence[SpeakerTurn | AlignedTurn],
     device: str = "cuda",
     cache_prefix: Path | None = None,
+    force: bool = False,
+    media_hash: str = "",
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speaker turns using ECAPA-TDNN."""
-    if cache_prefix is not None:
-        emb_file = (
-            Path(f"{cache_prefix}_turn_embeddings.npy")
-            if Path(f"{cache_prefix}_turn_embeddings.npy").is_file()
-            else Path(f"{cache_prefix}_embeddings.npy")
-        )
-        idx_file = (
-            Path(f"{cache_prefix}_turn_indices.json")
-            if Path(f"{cache_prefix}_turn_indices.json").is_file()
-            else Path(f"{cache_prefix}_indices.json")
-        )
+    if cache_prefix is not None and not force:
+        emb_file = Path(f"{cache_prefix}_turn_embeddings.npy")
+        idx_file = Path(f"{cache_prefix}_turn_indices.json")
+        prov_file = Path(f"{cache_prefix}_turn_embeddings_provenance.json")
         if emb_file.is_file() and idx_file.is_file():
-            console.print(
-                f"[bold cyan]Loading cached turn embeddings from {emb_file}...[/bold cyan]"
-            )
-            try:
-                emb_matrix = np.load(emb_file)
-                cached_indices = [
-                    int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
-                ]
-                return emb_matrix, cached_indices
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                logger.debug(
-                    "Failed to read turn embedding cache %s: %s", emb_file, exc
+            valid = True
+            if prov_file.is_file():
+                try:
+                    prov = EmbeddingCacheProvenance.model_validate_json(
+                        prov_file.read_text(encoding="utf-8")
+                    )
+                    if prov.entity_kind != "turn":
+                        logger.warning(
+                            "Turn embedding cache provenance mismatch: expected 'turn', got '%s'",
+                            prov.entity_kind,
+                        )
+                        valid = False
+                except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "Failed to validate turn embedding cache provenance %s: %s",
+                        prov_file,
+                        exc,
+                    )
+                    valid = False
+            if valid:
+                console.print(
+                    f"[bold cyan]Loading cached turn embeddings from {emb_file}...[/bold cyan]"
                 )
+                try:
+                    emb_matrix = np.load(emb_file)
+                    cached_indices = [
+                        int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+                    ]
+                    return emb_matrix, cached_indices
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    logger.debug(
+                        "Failed to read turn embedding cache %s: %s", emb_file, exc
+                    )
 
     if not turns:
         return np.empty((0, 0), dtype=np.float32), []
@@ -356,11 +396,17 @@ def extract_embeddings_for_turns(
     if cache_prefix is not None:
         emb_file = Path(f"{cache_prefix}_turn_embeddings.npy")
         idx_file = Path(f"{cache_prefix}_turn_indices.json")
+        prov_file = Path(f"{cache_prefix}_turn_embeddings_provenance.json")
         emb_file.parent.mkdir(parents=True, exist_ok=True)
         np.save(emb_file, emb_matrix)
         atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
-        np.save(Path(f"{cache_prefix}_embeddings.npy"), emb_matrix)
-        atomic_write_text(Path(f"{cache_prefix}_indices.json"), json.dumps(valid_indices, indent=2))
+        resolved_media_hash = media_hash or cache_prefix.name
+        prov = EmbeddingCacheProvenance(
+            entity_kind="turn",
+            media_hash=resolved_media_hash,
+            count=len(valid_indices),
+        )
+        atomic_write_text(prov_file, prov.model_dump_json(indent=2))
 
     return emb_matrix, valid_indices
 
@@ -446,6 +492,8 @@ def diarize_segments(
         segments=segments,
         device=device,
         cache_prefix=embeddings_cache_prefix,
+        force=force,
+        media_hash=provenance.media_hash if provenance else "",
     )
 
     if len(valid_indices) == 0:

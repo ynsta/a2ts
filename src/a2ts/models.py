@@ -1,7 +1,7 @@
 """Core data models for a2ts."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -164,3 +164,15 @@ class TrackCacheFile(BaseModel):
 
     provenance: TrackCacheProvenance
     segments: list[RawSegment]
+
+
+class EmbeddingCacheProvenance(BaseModel):
+    """Provenance tracking settings and metadata for cached speaker embeddings."""
+
+    version: int = 1
+    entity_kind: Literal["segment", "turn"]
+    media_hash: str
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb"
+    count: int
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+

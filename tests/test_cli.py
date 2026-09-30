@@ -525,8 +525,8 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
 
     emb = np.zeros((1, 192), dtype=np.float32)
     emb[0, 0] = 1.0
-    np.save(diar_dir / "abc1234_embeddings.npy", emb)
-    (diar_dir / "abc1234_indices.json").write_text("[0]", encoding="utf-8")
+    np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
+    (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
 
     captured_mapping: list[SpeakersMapping] = []
 
@@ -622,8 +622,8 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
 
     emb = np.zeros((1, 192), dtype=np.float32)
     emb[0, 0] = 1.0
-    np.save(diar_dir / "hash5678_embeddings.npy", emb)
-    (diar_dir / "hash5678_indices.json").write_text("[0]", encoding="utf-8")
+    np.save(diar_dir / "hash5678_turn_embeddings.npy", emb)
+    (diar_dir / "hash5678_turn_indices.json").write_text("[0]", encoding="utf-8")
 
     with (
         patch(
@@ -687,10 +687,10 @@ def test_recluster_command(tmp_path: Path) -> None:
 
     # Create dummy embeddings cache
     np.save(
-        diar_dir / "hash123_embeddings.npy",
+        diar_dir / "hash123_segment_embeddings.npy",
         np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
     )
-    (diar_dir / "hash123_indices.json").write_text("[0, 1]", encoding="utf-8")
+    (diar_dir / "hash123_segment_indices.json").write_text("[0, 1]", encoding="utf-8")
 
     # Create speakers mapping with custom name
     mapping = SpeakersMapping(cluster_defaults={"SPEAKER_00": "Valeros"})
@@ -874,10 +874,10 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
 
     # 2 embeddings for first two segments; segment 2 has no embedding (short blip)
     np.save(
-        diar_dir / "hash_closed_embeddings.npy",
+        diar_dir / "hash_closed_segment_embeddings.npy",
         np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
     )
-    (diar_dir / "hash_closed_indices.json").write_text("[0, 1]", encoding="utf-8")
+    (diar_dir / "hash_closed_segment_indices.json").write_text("[0, 1]", encoding="utf-8")
 
     # Create voice profiles with 2D matching centroids
     vp_path = tmp_path / "profiles.json"
