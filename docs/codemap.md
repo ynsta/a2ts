@@ -32,7 +32,7 @@ src/a2ts/
 
 | File | Primary Responsibility | Key Functions / Classes | Downstream Dependents |
 | :--- | :--- | :--- | :--- |
-| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment`, `WordTimestamp`, `SpeakerTurn`, `AlignedTurn`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `SessionMetadata`, `TranscriptCacheFile`, `DiarizationCacheFile`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile` | All modules |
+| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment`, `WordTimestamp`, `SpeakerTurn`, `AlignedTurn`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `ClusterSplit`, `SessionMetadata`, `TranscriptCacheFile`, `DiarizationCacheFile`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile` | All modules |
 | [`cache.py`](../src/a2ts/cache.py) | Atomic cache storage & provenance validation | `atomic_write_text()`, `compute_prompt_hash()`, `save_transcript_cache()`, `load_transcript_cache()`, `save_diarization_cache()`, `load_diarization_cache()` | `cli.py`, `craig.py` |
 | [`cli.py`](../src/a2ts/cli.py) | Top-level CLI orchestration & UX | `app`, `run()`, `craig()`, `review()`, `recluster()`, `split()`, `extract_vocab()`, `info()` | End user CLI (`a2ts`) |
 | [`craig.py`](../src/a2ts/craig.py) | Craig multi-track discovery, parsing & interleaving | `discover_tracks()`, `parse_track_username()`, `parse_speakers_file()`, `parse_info_file()`, `find_speakers_file()`, `compute_track_provenance()`, `build_craig_prompt()`, `load_track_cache()`, `save_track_cache()`, `transcribe_craig_track()`, `merge_craig_tracks_to_turns()` | `cli.py`, `tests/` |
@@ -41,7 +41,7 @@ src/a2ts/
 | [`transcriber.py`](../src/a2ts/transcriber.py) | Speech-to-text inference engines | `BaseTranscriber`, `WhisperTranscriber`, `VoxtralTranscriber`, `get_engine()`, `WhisperEngine` | `cli.py` |
 | [`diarizer.py`](../src/a2ts/diarizer.py) | Acoustic diarization & voice profiles | `get_nemotron_model()`, `diarize_nemotron()`, `get_embedding_model()`, `extract_embeddings()`, `extract_embeddings_for_turns()`, `diarize_segments()`, `classify_clusters_to_profiles()`, `compute_voice_profiles()`, `save_voice_profiles()`, `load_voice_profiles()` | `cli.py`, `tests/` |
 | [`timeline.py`](../src/a2ts/timeline.py) | Temporal slicing & word alignment | `align_words_to_speaker_turns()`, `assign_time_slices()`, `split_cluster_at_time()` | `cli.py`, `speaker_review.py` |
-| [`speaker_review.py`](../src/a2ts/speaker_review.py) | Interactive QCM & label propagation | `run_interactive_review()`, `apply_speakers_mapping()`, `propagate_speaker_labels()`, `save_speakers_mapping()` | `cli.py` |
+| [`speaker_review.py`](../src/a2ts/speaker_review.py) | Interactive QCM & label propagation | `run_interactive_review()`, `apply_speakers_mapping()`, `apply_splits_to_turns()`, `propagate_speaker_labels()`, `save_speakers_mapping()` | `cli.py` |
 | [`consolidator.py`](../src/a2ts/consolidator.py) | Turn debouncing & Markdown formatting | `debounce_consecutive_turns()`, `normalize_rpg_terms()`, `render_markdown_transcript()` | `cli.py` |
 | [`refiner.py`](../src/a2ts/refiner.py) | External LLM transcript refinement | `refine_transcript_markdown()`, `build_refiner_prompt()`, `run_agy_refiner()` | `cli.py` |
 
@@ -89,5 +89,6 @@ tests/
 │   ├── test_speaker_review.py  # Interactive QCM, label propagation & mappings
 │   ├── test_consolidator.py    # Contiguous turn debouncing, RPG normalization & Markdown
 │   └── test_refiner.py         # Prompt generation & agy subprocess safety guards
-└── test_cli.py                 # Comprehensive Typer runner CLI argument tests
+├── test_cli.py                 # Comprehensive Typer runner CLI argument tests
+└── test_splits_persistence.py  # Split persistence, positional fallback & voice profile enrollment tests
 ```

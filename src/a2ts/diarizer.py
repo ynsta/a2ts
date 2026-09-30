@@ -664,8 +664,6 @@ def compute_voice_profiles(
             break
         emb = embeddings[i]
         matched_turn = turn_by_id.get(valid_idx)
-        if matched_turn is None and 0 <= valid_idx < len(turns):
-            matched_turn = turns[valid_idx]
         if matched_turn is None:
             continue
 
@@ -678,6 +676,11 @@ def compute_voice_profiles(
         resolved_spk: str | None = None
 
         if isinstance(speakers_mapping, SpeakersMapping):
+            if (
+                speakers_mapping.label_sources
+                and speakers_mapping.label_sources.get(cluster_id) != "manual"
+            ):
+                continue
             if turn_id in speakers_mapping.turn_overrides:
                 resolved_spk = speakers_mapping.turn_overrides[turn_id]
             elif cluster_id in speakers_mapping.cluster_defaults:
@@ -935,3 +938,5 @@ def propagate_speaker_labels(
             unassigned_prefix
         ):
             mapping.turn_overrides[t_id] = propagated_name
+            if orig_cid not in mapping.label_sources:
+                mapping.label_sources[orig_cid] = "propagated"

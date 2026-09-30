@@ -42,6 +42,7 @@ from a2ts.diarizer import (
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
 from a2ts.models import (
     AlignedTurn,
+    ClusterSplit,
     DiarizationCacheProvenance,
     RawSegment,
     SessionMetadata,
@@ -52,6 +53,7 @@ from a2ts.models import (
 from a2ts.refiner import refine_transcript_markdown
 from a2ts.speaker_review import (
     apply_speakers_mapping,
+    apply_splits_to_turns,
     load_speakers_mapping,
     run_interactive_review,
     save_speakers_mapping,
@@ -59,7 +61,6 @@ from a2ts.speaker_review import (
 from a2ts.timeline import (
     align_words_to_speaker_turns,
     assign_time_slices,
-    split_cluster_at_time,
 )
 from a2ts.transcriber import WhisperEngine, get_engine
 from a2ts.vocab import (
@@ -396,6 +397,12 @@ def run(
     sliced_turns = assign_time_slices(speaker_turns, slice_minutes=slice_minutes)
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
+    # 5. Interactive speaker review & voice profile matching
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+    if mapping.splits:
+        aligned_turns = apply_splits_to_turns(aligned_turns, mapping.splits)
+
     # Cache aligned turns for review and split subcommands
     turns_path = session_dir / "turns.json"
     atomic_write_text(
@@ -404,10 +411,6 @@ def run(
             [t.model_dump() for t in aligned_turns], indent=2, ensure_ascii=False
         ),
     )
-
-    # 5. Interactive speaker review & voice profile matching
-    mapping_path = session_dir / "speakers_mapping.json"
-    mapping = load_speakers_mapping(mapping_path)
 
     loaded_db: VoiceProfilesDatabase | None = None
     if voice_profiles.is_file() and diarize:
@@ -460,6 +463,7 @@ def run(
                     for cid, (best_spk, score) in cluster_matches.items():
                         if cid not in mapping.cluster_defaults:
                             mapping.cluster_defaults[cid] = best_spk
+                            mapping.label_sources[cid] = "profile_match"
                             console.print(
                                 f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
                             )
@@ -502,6 +506,9 @@ def run(
             min_duration=review_min_duration,
             filter_slice=review_time_slice,
         )
+        for cid, val in mapping.cluster_defaults.items():
+            if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
+                mapping.label_sources[cid] = "manual"
 
     if closed_set:
         propagate_speaker_labels(aligned_turns, mapping)
@@ -510,18 +517,18 @@ def run(
     aligned_turns = apply_speakers_mapping(aligned_turns, mapping)
 
     # Auto-enroll / update voice profiles
-    if diarize:
+    if diarize and not closed_set:
         embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
         indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-        has_named_speakers = any(
-            not v.startswith("SPEAKER_") for v in mapping.cluster_defaults.values()
-        ) or any(
-            not v.startswith("SPEAKER_") for v in mapping.turn_overrides.values()
+        has_manual_speakers = any(
+            not v.startswith("SPEAKER_")
+            for cid, v in mapping.cluster_defaults.items()
+            if mapping.label_sources.get(cid) == "manual"
         )
         if (
             (not embeddings_npy.is_file() or not indices_json.is_file() or force)
             and speaker_turns
-            and has_named_speakers
+            and has_manual_speakers
             and audio_path.is_file()
         ):
             extract_embeddings_for_turns(
@@ -533,32 +540,33 @@ def run(
             )
             embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
             indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-        if embeddings_npy.is_file() and indices_json.is_file():
-            try:
-                embeddings = np.load(embeddings_npy)
-                valid_indices = [
-                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-                ]
-            except (OSError, ValueError, json.JSONDecodeError):
+        if has_manual_speakers:
+            if embeddings_npy.is_file() and indices_json.is_file():
+                try:
+                    embeddings = np.load(embeddings_npy)
+                    valid_indices = [
+                        int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
+                    ]
+                except (OSError, ValueError, json.JSONDecodeError):
+                    embeddings = np.empty((0, 0), dtype=np.float32)
+                    valid_indices = []
+            else:
                 embeddings = np.empty((0, 0), dtype=np.float32)
                 valid_indices = []
-        else:
-            embeddings = np.empty((0, 0), dtype=np.float32)
-            valid_indices = []
 
-        turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(aligned_turns)
-        db = compute_voice_profiles(
-            embeddings,
-            valid_indices,
-            turns_for_profiles,
-            mapping,
-            existing_db=loaded_db,
-            session_id=file_hash,
-        )
-        save_voice_profiles(db, voice_profiles)
-        console.print(
-            f"[green]✓ Voice profiles updated for {len(db.speakers)} enrolled speakers.[/green]"
-        )
+            turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(aligned_turns)
+            db = compute_voice_profiles(
+                embeddings,
+                valid_indices,
+                turns_for_profiles,
+                mapping,
+                existing_db=loaded_db,
+                session_id=file_hash,
+            )
+            save_voice_profiles(db, voice_profiles)
+            console.print(
+                f"[green]✓ Voice profiles updated for {len(db.speakers)} enrolled speakers.[/green]"
+            )
 
     # 6. Consolidation & Debouncing
     console.print("[bold]Step 5: Consolidating transcript...[/bold]")
@@ -783,9 +791,10 @@ def review(
                     if matched_turn is not None:
                         cid = matched_turn.cluster_id
                         cluster_embs.setdefault(cid, []).append(embeddings[idx_emb])
-                    elif tid < len(turns):
-                        cid = turns[tid].cluster_id
-                        cluster_embs.setdefault(cid, []).append(embeddings[idx_emb])
+                    else:
+                        console.print(
+                            f"[dim]Debug: Turn ID {tid} not found, skipping embedding[/dim]"
+                        )
 
                 cluster_matches = classify_clusters_to_profiles(
                     cluster_embs,
@@ -796,6 +805,7 @@ def review(
                 for cid, (best_spk, score) in cluster_matches.items():
                     if cid not in mapping.cluster_defaults:
                         mapping.cluster_defaults[cid] = best_spk
+                        mapping.label_sources[cid] = "profile_match"
                         console.print(
                             f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
                         )
@@ -836,6 +846,9 @@ def review(
         min_duration=min_duration,
         filter_slice=time_slice,
     )
+    for cid, val in mapping.cluster_defaults.items():
+        if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
+            mapping.label_sources[cid] = "manual"
 
     if closed_set:
         propagate_speaker_labels(turns, mapping)
@@ -846,38 +859,45 @@ def review(
 
     # Auto-enroll / update voice profiles if cached embeddings exist
     if (
-        embeddings_npy
+        not closed_set
+        and embeddings_npy
         and indices_json
         and embeddings_npy.is_file()
         and indices_json.is_file()
     ):
-        try:
-            embeddings = np.load(embeddings_npy)
-            valid_indices = [
-                int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-            ]
-            loaded_db = (
-                load_voice_profiles(voice_profiles)
-                if voice_profiles.is_file()
-                else None
-            )
-            turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(aligned_turns)
-            db = compute_voice_profiles(
-                embeddings,
-                valid_indices,
-                turns_for_profiles,
-                mapping,
-                existing_db=loaded_db,
-                session_id=media_hash or session_path.stem,
-            )
-            save_voice_profiles(db, voice_profiles)
-            console.print(
-                f"[green]✓ Voice profiles updated for {len(db.speakers)} enrolled speakers.[/green]"
-            )
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            console.print(
-                f"[yellow]Warning: Voice profiles update skipped in review: {exc}[/yellow]"
-            )
+        has_manual_speakers = any(
+            not v.startswith("SPEAKER_")
+            for cid, v in mapping.cluster_defaults.items()
+            if mapping.label_sources.get(cid) == "manual"
+        )
+        if has_manual_speakers:
+            try:
+                embeddings = np.load(embeddings_npy)
+                valid_indices = [
+                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
+                ]
+                loaded_db = (
+                    load_voice_profiles(voice_profiles)
+                    if voice_profiles.is_file()
+                    else None
+                )
+                turns_for_profiles: list[SpeakerTurn | AlignedTurn] = list(aligned_turns)
+                db = compute_voice_profiles(
+                    embeddings,
+                    valid_indices,
+                    turns_for_profiles,
+                    mapping,
+                    existing_db=loaded_db,
+                    session_id=media_hash or session_path.stem,
+                )
+                save_voice_profiles(db, voice_profiles)
+                console.print(
+                    f"[green]✓ Voice profiles updated for {len(db.speakers)} enrolled speakers.[/green]"
+                )
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                console.print(
+                    f"[yellow]Warning: Voice profiles update skipped in review: {exc}[/yellow]"
+                )
 
     debounced_turns = debounce_consecutive_turns(aligned_turns)
     raw_md = render_markdown_transcript(debounced_turns)
@@ -911,7 +931,14 @@ def split(
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
     turns = [AlignedTurn.model_validate(t) for t in turns_data]
 
-    updated_turns = split_cluster_at_time(turns, cluster_id, at, to)
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+    mapping.splits.append(
+        ClusterSplit(cluster_id=cluster_id, at=at, new_cluster_id=to)
+    )
+    save_speakers_mapping(mapping, mapping_path)
+
+    updated_turns = apply_splits_to_turns(turns, mapping.splits)
     turns_path.write_text(
         json.dumps(
             [t.model_dump() for t in updated_turns], indent=2, ensure_ascii=False
@@ -919,8 +946,6 @@ def split(
         encoding="utf-8",
     )
 
-    mapping_path = session_dir / "speakers_mapping.json"
-    mapping = load_speakers_mapping(mapping_path)
     mapped_turns = apply_speakers_mapping(updated_turns, mapping)
     debounced_turns = debounce_consecutive_turns(mapped_turns)
     raw_md = render_markdown_transcript(debounced_turns)
@@ -1134,6 +1159,11 @@ def recluster(
     sliced_turns = assign_time_slices(speaker_turns, slice_minutes=resolved_slice)
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping = load_speakers_mapping(mapping_path)
+    if mapping.splits:
+        aligned_turns = apply_splits_to_turns(aligned_turns, mapping.splits)
+
     turns_path = session_dir / "turns.json"
     turns_path.write_text(
         json.dumps(
@@ -1148,16 +1178,15 @@ def recluster(
         encoding="utf-8",
     )
 
-    mapping_path = session_dir / "speakers_mapping.json"
-    mapping = load_speakers_mapping(mapping_path)
-
     if voice_profiles.is_file():
         loaded_db = load_voice_profiles(voice_profiles)
         if loaded_db and loaded_db.speakers:
             cluster_embs: dict[str, list[np.ndarray]] = {}
+            turn_by_id = {t.id: t for t in speaker_turns}
             for idx_emb, seg_idx in enumerate(valid_indices):
-                if seg_idx < len(speaker_turns):
-                    cid = speaker_turns[seg_idx].cluster_id
+                matched_turn = turn_by_id.get(seg_idx)
+                if matched_turn is not None:
+                    cid = matched_turn.cluster_id
                     cluster_embs.setdefault(cid, []).append(emb_matrix[idx_emb])
 
             cluster_matches = classify_clusters_to_profiles(
@@ -1169,6 +1198,7 @@ def recluster(
             for cid, (best_spk, score) in cluster_matches.items():
                 if cid not in mapping.cluster_defaults:
                     mapping.cluster_defaults[cid] = best_spk
+                    mapping.label_sources[cid] = "profile_match"
                     console.print(
                         f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
                     )

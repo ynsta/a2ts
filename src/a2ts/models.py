@@ -59,12 +59,22 @@ class EntityRecord(BaseModel):
     source_file: str = ""
 
 
+class ClusterSplit(BaseModel):
+    """A record of splitting a speaker cluster at a given timestamp."""
+
+    cluster_id: str
+    at: float
+    new_cluster_id: str
+
+
 class SpeakersMapping(BaseModel):
     """Mapping of cluster IDs and time slice overrides to speaker names."""
 
     cluster_defaults: dict[str, str] = Field(default_factory=dict)
     slice_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     turn_overrides: dict[int, str] = Field(default_factory=dict)
+    splits: list[ClusterSplit] = Field(default_factory=list)
+    label_sources: dict[str, str] = Field(default_factory=dict)
 
 
 class SessionMetadata(BaseModel):

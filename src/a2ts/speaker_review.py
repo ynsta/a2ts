@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from a2ts.media import play_audio_clip_async, stop_audio_playback
-from a2ts.models import AlignedTurn, SpeakersMapping
+from a2ts.models import AlignedTurn, ClusterSplit, SpeakersMapping
 
 console = Console()
 
@@ -61,6 +61,18 @@ def apply_speakers_mapping(
             speaker = mapping.turn_overrides[turn.turn_id]
 
         updated.append(turn.model_copy(update={"speaker": speaker}))
+    return updated
+
+
+def apply_splits_to_turns(
+    turns: list[AlignedTurn], splits: list[ClusterSplit]
+) -> list[AlignedTurn]:
+    """Apply recorded cluster splits to turns."""
+    updated = [t.model_copy() for t in turns]
+    for split in splits:
+        for turn in updated:
+            if turn.cluster_id == split.cluster_id and turn.start >= split.at:
+                turn.cluster_id = split.new_cluster_id
     return updated
 
 
@@ -381,6 +393,7 @@ def run_interactive_review(
                             mapping.slice_overrides.setdefault(str(slice_id), {})[
                                 cid
                             ] = opts[slice_choice]
+                            mapping.label_sources[cid] = "manual"
                             console.print(
                                 f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {opts[slice_choice]}[/green]"
                             )
@@ -391,6 +404,7 @@ def run_interactive_review(
                                 mapping.slice_overrides.setdefault(str(slice_id), {})[
                                     cid
                                 ] = c_name
+                                mapping.label_sources[cid] = "manual"
                                 console.print(
                                     f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {c_name}[/green]"
                                 )
@@ -399,6 +413,7 @@ def run_interactive_review(
                             mapping.slice_overrides.setdefault(str(slice_id), {})[
                                 cid
                             ] = slice_choice
+                            mapping.label_sources[cid] = "manual"
                             console.print(
                                 f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {slice_choice}[/green]"
                             )
@@ -407,16 +422,19 @@ def run_interactive_review(
                 break
             elif raw_choice in opts:
                 mapping.cluster_defaults[cid] = opts[raw_choice]
+                mapping.label_sources[cid] = "manual"
                 console.print(f"[green]✓ Mapped {cid} -> {opts[raw_choice]}[/green]\n")
                 break
             elif raw_choice == "c":
                 custom_name = Prompt.ask("Enter custom speaker name").strip()
                 if custom_name:
                     mapping.cluster_defaults[cid] = custom_name
+                    mapping.label_sources[cid] = "manual"
                     console.print(f"[green]✓ Mapped {cid} -> {custom_name}[/green]\n")
                 break
             else:
                 mapping.cluster_defaults[cid] = raw_choice
+                mapping.label_sources[cid] = "manual"
                 console.print(f"[green]✓ Mapped {cid} -> {raw_choice}[/green]\n")
                 break
 
