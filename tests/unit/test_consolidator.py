@@ -156,7 +156,7 @@ def test_normalize_rpg_terms_phonetic_fixes() -> None:
     assert normalize_rpg_terms("fais un jet de délai") == "fais un jet de dés"
 
 
-def test_debounce_applies_rpg_normalization() -> None:
+def test_debounce_preserves_text_without_normalization() -> None:
     turns = [
         AlignedTurn(
             turn_id=0,
@@ -168,5 +168,7 @@ def test_debounce_applies_rpg_normalization() -> None:
         ),
     ]
     debounced = debounce_consecutive_turns(turns)
-    assert debounced[0].text == "Lance 1d20 pour voir."
+    assert debounced[0].text == "Lance un dé 20 pour voir."
+    md = render_markdown_transcript(debounced)
+    assert "Lance 1d20 pour voir." in md
 

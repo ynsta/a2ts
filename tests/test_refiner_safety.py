@@ -172,16 +172,16 @@ def test_refine_transcript_markdown_chunking_and_timeout() -> None:
     # Create transcript with 2 turns
     raw = (
         "### [00:00:00 - 00:00:05] Alice\n"
-        "Premiere replique avec un des vingt.\n\n"
+        "Premiere replique avec un dé vingt.\n\n"
         "### [00:00:05 - 00:00:10] Bob\n"
-        "Deuxieme replique avec deux des six."
+        "Deuxieme replique avec deux dés six."
     )
 
     def fake_subprocess_run(cmd, input, **kwargs):
         # Return valid refined chunk preserving header
         chunk_lines = input.split("Voici la transcription brute:\n\n")[-1].strip()
         mock = MagicMock()
-        mock.stdout = chunk_lines.replace("un des vingt", "1d20").replace("deux des six", "2d6")
+        mock.stdout = chunk_lines.replace("un dé vingt", "1d20").replace("deux dés six", "2d6")
         return mock
 
     with (

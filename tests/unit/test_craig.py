@@ -683,8 +683,8 @@ def test_merge_craig_tracks_downstream_compatibility() -> None:
     assert debounced[0].speaker == "Merrow (merrow1)"
     assert debounced[0].start == 1.0
     assert debounced[0].end == 4.0
-    # RPG terms normalization occurs in debouncer
-    assert debounced[0].text == "Je lance 1d20."
+    # Debounce keeps text unchanged; normalization occurs in render_markdown_transcript
+    assert debounced[0].text == "Je lance un dé de 20."
 
     assert debounced[1].speaker == "MJ (tessaro)"
     assert debounced[1].text == "C'est réussi !"

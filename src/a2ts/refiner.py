@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 
+from a2ts.consolidator import normalize_rpg_terms
+
 logger = logging.getLogger(__name__)
 
 PHONETIC_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
@@ -23,10 +25,7 @@ TURN_HEADER_PATTERN = re.compile(
 
 def normalize_rpg_phonetics(text: str) -> str:
     """Deterministically correct speech-to-text artifacts for French RPG terms."""
-    result = text
-    for pattern, replacement in PHONETIC_REPLACEMENTS:
-        result = pattern.sub(replacement, result)
-    return result
+    return normalize_rpg_terms(text)
 
 
 def compute_edit_distance_ratio(original: str, refined: str) -> float:

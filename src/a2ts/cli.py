@@ -273,6 +273,13 @@ def run(
         bool,
         typer.Option("--force", help="Force re-transcription and re-diarization ignoring existing cache"),
     ] = False,
+    rpg_normalize: Annotated[
+        bool,
+        typer.Option(
+            "--rpg-normalize/--no-rpg-normalize",
+            help="Normalize French tabletop RPG dice expressions and terms",
+        ),
+    ] = True,
     output: Annotated[
         Path, typer.Option(help="Output markdown transcript path")
     ] = Path("transcript.md"),
@@ -574,7 +581,7 @@ def run(
     # 6. Consolidation & Debouncing
     console.print("[bold]Step 5: Consolidating transcript...[/bold]")
     debounced_turns = debounce_consecutive_turns(aligned_turns)
-    raw_md = render_markdown_transcript(debounced_turns)
+    raw_md = render_markdown_transcript(debounced_turns, rpg_normalize=rpg_normalize)
 
     # 7. Optional LLM Refinement
     final_md = raw_md
@@ -1262,6 +1269,13 @@ def craig(
     force: Annotated[
         bool, typer.Option("--force", help="Force re-transcription ignoring existing cache")
     ] = False,
+    rpg_normalize: Annotated[
+        bool,
+        typer.Option(
+            "--rpg-normalize/--no-rpg-normalize",
+            help="Normalize French tabletop RPG dice expressions and terms",
+        ),
+    ] = True,
     refine: Annotated[
         bool,
         typer.Option(
@@ -1375,8 +1389,8 @@ def craig(
         aligned_turns, threshold_seconds=debounce
     )
 
-    # 11. Render markdown via render_markdown_transcript(debounced_turns)
-    raw_md = render_markdown_transcript(debounced_turns)
+    # 11. Render markdown via render_markdown_transcript(debounced_turns, rpg_normalize=rpg_normalize)
+    raw_md = render_markdown_transcript(debounced_turns, rpg_normalize=rpg_normalize)
 
     out_path = output if output is not None else recording_dir / "transcript.md"
 

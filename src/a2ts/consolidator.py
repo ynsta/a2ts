@@ -41,10 +41,20 @@ EXCLUDED_FOLLOWING_NOUNS = (
     "gardes|joueurs|soldats|membres|ans|minutes|secondes|jours|heures|mètres|personnages|ennemis|individus|points"
 )
 
+ROLL_KEYWORDS = (
+    r"(?:lance[rsz]?|lancent|roule[rsz]?|roulent|jet[s]?(?:\s+(?:de|d['’]))?|"
+    r"tire[rsz]?|tirent|fait|fais|d[ée]gâts?|\d*d\d+)"
+)
+
+ROLL_CONTEXT_PATTERN = re.compile(
+    rf"\b{ROLL_KEYWORDS}(?:-\w+)?(?:\s+[^.!?\n\s]+){{0,3}}\s*$",
+    re.IGNORECASE,
+)
+
 DICE_PATTERN = re.compile(
-    r"(?<!\bchacun\s)(?<!\bchacune\s)(?<!\bl\')(?:(?<=\s)|(?<=^))"
+    r"(?<!\bchacun\s)(?<!\bchacune\s)(?<!\bl\')(?:(?<=[\s'’])|(?<=^))"
     r"(?:(un|une|deux|trois|quatre|cinq|six|[1-9]\d*)\s+)?"
-    r"(?:des?|dés?)\s+(?:de\s+)?"
+    r"(d[éèe]s?)\s+(?:de\s+)?"
     r"(4|6|8|10|12|20|100|quatre|six|huit|dix|douze|vingt|cent)\b"
     rf"(?!\s+(?:{EXCLUDED_FOLLOWING_NOUNS}))",
     re.IGNORECASE,
@@ -57,25 +67,58 @@ def normalize_rpg_terms(text: str) -> str:
         return "jets de dés" if m.group(2) else "jet de dés"
 
     out = re.sub(r"\b(jet)(s)?\s*-\s*dés?\b", _jet_repl, text, flags=re.IGNORECASE)
-    out = re.sub(r"\b(jet)(s)?\s+de\s+délai\b", _jet_repl, out, flags=re.IGNORECASE)
+    out = re.sub(r"\bjets?\s+de\s+délai\b", "jet de dés", out, flags=re.IGNORECASE)
+    out = re.sub(
+        r"\b(jet)(s)?\s*d['’]\s*initiative\b",
+        lambda m: "jets d'initiative" if m.group(2) else "jet d'initiative",
+        out,
+        flags=re.IGNORECASE,
+    )
 
-    def _dice_repl(m: re.Match[str]) -> str:
-        count_match = m.group(1)
-        sides_match = m.group(2)
+    # Collapse explicit dice notation: e.g. 2 d 6 -> 2d6
+    out = re.sub(r"\b(\d+)\s*[dD]\s*(\d+)\b", r"\1d\2", out)
+
+    # Iterative left-to-right dice terms normalization with roll context verification
+    start_pos = 0
+    while True:
+        match = DICE_PATTERN.search(out, pos=start_pos)
+        if not match:
+            break
+
+        count_match = match.group(1)
+        die_token = match.group(2)
+        sides_match = match.group(3)
+
+        # Bare unaccented 'de' without a count is preposition, not a die
+        if count_match is None and die_token.lower() == "de":
+            start_pos = match.end()
+            continue
+
+        # Check if accented (dé/dés) or preceded by roll context keyword within 1-3 words
+        is_accented = any(c in die_token.lower() for c in ("é", "è"))
+        if not is_accented:
+            prefix = out[: match.start()]
+            if not ROLL_CONTEXT_PATTERN.search(prefix):
+                start_pos = match.end()
+                continue
+
         count = (
             DICE_COUNT_MAP.get(count_match.lower(), count_match)
             if count_match
             else "1"
         )
         sides = DICE_SIDES_MAP.get(sides_match.lower(), sides_match)
-        prefix = (
+        prefix_dice = (
             "1d"
             if (not count_match or count_match.lower() in ("un", "une", "1"))
             else f"{count}d"
         )
-        return f"{prefix}{sides}"
+        replacement = f"{prefix_dice}{sides}"
 
-    return DICE_PATTERN.sub(_dice_repl, out)
+        out = out[: match.start()] + replacement + out[match.end() :]
+        start_pos = match.start() + len(replacement)
+
+    return out
 
 
 def format_timestamp(seconds: float) -> str:
@@ -115,18 +158,13 @@ def debounce_consecutive_turns(
         else:
             debounced.append(current)
 
-    normalized_debounced: list[AlignedTurn] = []
-    for turn in debounced:
-        norm_text = normalize_rpg_terms(turn.text)
-        if norm_text != turn.text:
-            normalized_debounced.append(turn.model_copy(update={"text": norm_text}))
-        else:
-            normalized_debounced.append(turn)
-
-    return normalized_debounced
+    return debounced
 
 
-def render_markdown_transcript(turns: list[AlignedTurn]) -> str:
+def render_markdown_transcript(
+    turns: list[AlignedTurn],
+    rpg_normalize: bool = True,
+) -> str:
     """Render aligned turns into standard Markdown with timestamp headings."""
     if not turns:
         return ""
@@ -137,6 +175,7 @@ def render_markdown_transcript(turns: list[AlignedTurn]) -> str:
         end_str = format_timestamp(turn.end)
         lines.append(f"### [{start_str} - {end_str}] {turn.speaker}")
         lines.append("")
-        lines.append(normalize_rpg_terms(turn.text))
+        text = normalize_rpg_terms(turn.text) if rpg_normalize else turn.text
+        lines.append(text)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
