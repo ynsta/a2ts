@@ -223,3 +223,15 @@ Displays current environment, hardware accelerators, CUDA availability, and inst
 3. **Voice Profile Idempotency**:
    - `VoiceProfile` tracks `sample_ids: list[str]` to guarantee repeated enrollment runs on identical session turns produce zero centroid drift.
 4. **Data Integrity**: Under no circumstances should transcript text be permanently modified or discarded without an immutable raw cache copy in `.a2ts/transcripts/` and `.a2ts/sessions/<media-sha256>/turns.json`.
+5. **Security & Boundary Defense**:
+   - Zero `shell=True` invocations across all CLI tools and subprocess pipelines. Subprocesses execute strictly as argument vectors (`list[str]`) with mandatory timeouts.
+   - User-supplied file paths, lore notes, and session directories are resolved and guarded against path traversal before opening.
+   - Untrusted inputs (Markdown notes, corrupt audio containers) are handled defensively with graceful degradation and safe YAML parsing (`yaml.safe_load`).
+6. **Testing & Quality Verification**:
+   - Invariant-driven testing ("test the WHAT, not the HOW"): tests assert observable inputs, outputs, schemas, and state transitions, preserving freedom to refactor internal implementations.
+   - Zero coverage vanity: avoid imposing arbitrary coverage quotas that force testing private implementation details or make future refactorings painful.
+   - Macro benchmarks & performance checks: benchmark tests monitor macro algorithmic scaling and resource ceilings without locking down internal call structures.
+   - Zero untyped definitions across production code and test suites (`uv run mypy` with 0 errors under PEP 561).
+   - Hermetic test isolation: tests operate in ephemeral temporary directories (`tmp_path`) with no dependencies on network access or GPU hardware.
+
+

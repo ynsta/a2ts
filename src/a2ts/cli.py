@@ -80,14 +80,27 @@ def resolve_session_dir(path: Path) -> Path:
 
     1. If `path / 'turns.json'` exists or `path / 'session.json'` exists (direct session directory
        or legacy root cache), return `path`.
-    2. Else if `(path / 'sessions').is_dir()`:
+    2. If `path.parent / 'sessions' / path.name` has turns.json/session.json (e.g. `.a2ts/<hash>`), return it.
+    3. If `Path('.a2ts/sessions') / path.name` has turns.json/session.json (e.g. raw `<hash>`), return it.
+    4. Else if `(path / 'sessions').is_dir()`:
        - If exactly 1 session directory exists, return it.
        - If multiple session directories exist, raise typer.Exit(code=1) with available sessions.
        - If no sessions exist, raise typer.Exit(code=1).
-    3. Return `path` fallback.
+    5. Return `path` fallback.
     """
     if (path / "turns.json").is_file() or (path / "session.json").is_file():
         return path
+
+    candidate = path.parent / "sessions" / path.name
+    if (candidate / "turns.json").is_file() or (candidate / "session.json").is_file():
+        return candidate
+
+    default_candidate = Path(".a2ts/sessions") / path.name
+    if (default_candidate / "turns.json").is_file() or (
+        default_candidate / "session.json"
+    ).is_file():
+        return default_candidate
+
     sessions_dir = path / "sessions"
     if sessions_dir.is_dir():
         sessions = sorted([d for d in sessions_dir.iterdir() if d.is_dir()])
@@ -1290,7 +1303,7 @@ def craig(
     ] = False,
     refine_model: Annotated[
         str, typer.Option(help="Model name for LLM refiner")
-    ] = "gemini-2.5-flash",
+    ] = "gemini-3.8-flash-low",
     refine_effort: Annotated[
         str, typer.Option(help="Reasoning effort for LLM refiner (low/medium/high)")
     ] = "low",

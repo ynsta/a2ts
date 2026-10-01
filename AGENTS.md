@@ -118,11 +118,85 @@ transient plans must never replace or contradict living canonical documentation.
 - Must link to `spec.md`, `design.md`, `codemap.md`, `runbook.md`, and every active ADR in `docs/adr/`.
 - Relative links must always remain valid. Broken links or unindexed ADRs are lint-level documentation bugs.
 
-### Living Docs vs. Ephemeral Plans (No Confusing Transient Docs)
+### Living Docs vs. Ephemeral Plans (Zero-Transient-Pollution Rule)
 
-- **Transient execution artifacts:** Implementation plans (e.g. from `superpowers:writing-plans`) are scratch execution scaffolding only. Historical plans belong in `docs/archive/` and must carry clear deprecation notices.
-- **Single Source of Truth:** Never treat an implementation plan as the living specification. When code is implemented or refactored, the living documentation (`spec.md`, `design.md`, `codemap.md`, `runbook.md`, `adr/`) MUST be updated to reflect current disk and architecture reality.
-- **Consolidation Gate:** After executing any non-trivial plan, consolidate decisions and changes into canonical docs and refresh `.agents/last-docs-consolidate`.
+Transient, ephemeral, or superseded plans confuse both agents and human maintainers:
+- **Zero Lingering Plans in `docs/plans/`:** `docs/plans/` is strictly for active, currently in-progress execution scaffolding. The moment a plan is fully executed, it **MUST be moved to `docs/archive/`** with an `[ARCHIVED]` warning header, and replaced in `docs/plans/` with a tombstone pointer or deleted. Never leave completed plans in `docs/plans/`.
+- **Absolute Primacy of the Canonical 5:** Only `docs/spec.md`, `docs/design.md`, `docs/codemap.md`, `docs/runbook.md`, and `docs/adr/` are living sources of truth. If any statement in an implementation plan (active or archived) conflicts with canonical docs or disk state, **canonical docs win unconditionally**.
+- **No Orphaned Architectural Decisions:** All architectural choices, adapters (e.g. Craig multi-track), and framework pivots must have an accepted ADR in `docs/adr/` indexed in `docs/README.md`. Scratch design files belong in `docs/archive/` with links back to the canonical ADR.
+- **Code-to-Doc Parity Invariant:** CLI option defaults, model field names, class/protocol names, and cache paths in `spec.md`, `design.md`, `codemap.md`, and `README.md` must strictly match disk state in the same change set.
+- **Consolidation Gate & Refresh:** Non-trivial work is not complete until:
+  1. Resulting specifications, designs, recipes, and ADRs are transferred into canonical docs.
+  2. Completed plans are archived.
+  3. `docs/README.md` index and `docs/codemap.md` module directory are synchronized.
+  4. `.agents/last-docs-consolidate` is updated with current ISO 8601 timestamp.
+
+## Code Quality & Engineering Standards (Python / a2ts)
+
+Every agent working on this repo must uphold these clean code, typing, and robustness standards:
+
+### 1. Static Checks & Typing Gate
+Before declaring any task or step complete, code MUST pass all 4 gates with 0 errors:
+- **Typing (`mypy`):** `uv run mypy` must pass with **0 issues across all source and test files**.
+  - All public and private functions must have explicit parameter and return type annotations (`disallow_untyped_defs = true`).
+  - No untyped definitions or missing stubs. Use standard Python 3.13 typing (`list[str]`, `dict[str, Any]`, `Protocol`).
+  - Package marker `src/a2ts/py.typed` (PEP 561) must remain present on disk.
+- **Linting (`ruff check`):** `uv run ruff check --no-cache` must pass with **0 issues**.
+- **Formatting (`ruff format`):** `uv run ruff format --check --no-cache` must report **0 unformatted files**.
+- **Test Suite (`pytest`):** `uv run pytest` must pass **100% green** with zero regressions.
+
+### 2. Robust App & Clean Code Invariants
+- **Pydantic Validation:** All external data, cache records, and session payloads must be defined as `pydantic.BaseModel` with strict field types. Never read or write raw untyped JSON dictionaries without schema validation.
+- **Atomic I/O Invariant:** File writes that mutate persistent caches or output documents (`.json`, `.md`, `.wav`) must use atomic write patterns (`atomic_write_text()` via sibling `.tmp` and `os.replace`). Never write directly to target files to prevent partial or corrupted writes on interrupt.
+- **Hardware & Device Defensiveness:** Never hardcode `.to("cuda")` without checking `torch.cuda.is_available()`. Always respect user-provided `--device` and provide clean CPU fallback paths.
+- **Bounded Subprocesses:** Every `subprocess.run()` invocation must specify:
+  - `check=True` or explicit exit status checks.
+  - `timeout=<seconds>` to avoid hung processes on LLM or audio tool deadlocks.
+  - Clean error handling wrapping `subprocess.CalledProcessError`, `FileNotFoundError`, or `TimeoutExpired` into user-friendly runtime errors or safe fallbacks.
+- **Deterministic Cache Provenance:** Cache keys must incorporate full setting envelopes (media hash, model name, prompt hash, thresholds, compute types) using SHA-256 digests. Changing any parameter must invalidate the downstream cache automatically.
+- **Zero Hallucination / Deletion Guard in Transformers & LLMs:**
+  - Before running text post-processing or LLM refinement, always write an immutable raw snapshot to disk (`<output>.raw.md`).
+  - Validate output against strict invariants (e.g. all turn headers preserved, word count within ratio delta) and fall back safely to raw text on mismatch.
+
+### 3. Testing Principles: Test the WHAT, Not the HOW
+Every test in this repository must test observable behavior and outcomes, not internal implementation mechanics:
+- **Observable Behavior Over Implementation Details:**
+  - Verify public contracts, inputs, outputs, generated files, and state transitions (the WHAT).
+  - Do not assert on private helper functions, internal line execution orders, or intermediate variables (the HOW).
+- **Refactoring Resilience:**
+  - Refactoring an algorithm, renaming an internal helper, or changing an internal data structure MUST NOT break tests as long as external behavior and contracts remain intact.
+  - Avoid brittle tests that spy on private methods or mock internal implementation steps.
+- **Minimal Mock Boundaries:**
+  - Mock ONLY at external system boundaries: slow remote APIs, GPU inference models, long-running CLI tools (`gemini`, `ffmpeg`).
+  - Never mock pure domain logic, internal utility classes, Pydantic schemas, or standard library helpers.
+  - Fakes and mocks must satisfy typed protocols or Pydantic models to catch interface drift.
+- **Test Code Quality & Rigor:**
+  - **Strict Static Typing in Tests:** All test functions, fixtures, and fake classes must have explicit type annotations (`disallow_untyped_defs = true`). Tests are first-class production code.
+  - **Hermetic & Isolated:** Tests must use pytest's `tmp_path` fixture for all filesystem operations. Never touch `~/.a2ts`, repository root, or global temp paths.
+  - **Deterministic & Fast:** Tests must run without network access, wall-clock timing races, or GPU requirements.
+  - **Intent-Revealing Names:** Use clear naming patterns describing the scenario and expected outcome: `test_<feature>_<expected_outcome>_<condition>()`. Avoid generic names like `test_case_1()`.
+- **No Coverage Vanity (Avoid Painful Over-Coverage of the HOW):**
+  - Never impose arbitrary high coverage quotas (e.g. 95%+ or 100%).
+  - Chasing vanity coverage metrics inevitably forces tests to assert on private helpers, intermediate steps, and internal mechanics (the HOW), resulting in brittle test suites that make future changes and refactoring painful.
+  - Prioritize meaningful domain invariants, public API contracts, failure modes, and security boundaries over vanity coverage numbers.
+- **Macro Benchmarks & Performance Tests:**
+  - Benchmark and performance smoke tests are encouraged for critical paths (e.g. alignment algorithmic scaling, memory ceilings, packaging cleanliness, token limits).
+  - Benchmarks must evaluate macro observable outcomes (runtime scaling with input size, memory envelope bounds, cache hit speed), never internal micro-call counts, intermediate profiler frames, or private loop counters.
+
+### 4. Security & Defensive Engineering Standards
+- **Subprocess & Command Injection Defense:**
+  - `shell=True` is strictly forbidden across the codebase and test suite.
+  - Invocations must use explicit argument lists (`list[str]`), never shell string concatenation or formatting.
+  - Input parameters (file names, session IDs, model flags) must never be passed to unvalidated shell invocations.
+- **Path Traversal & Filesystem Hardening:**
+  - User-provided paths (audio media, vocabulary files, Obsidian notes, session directories) must be resolved and checked against path traversal (`..`) before file operations.
+  - Session outputs must be confined to validated session paths (`.a2ts/sessions/<media_hash>/`).
+- **Untrusted Input Sanitization:**
+  - Treat all external media files, user notes, and metadata as untrusted data.
+  - Never use `eval()`, `exec()`, or Python `pickle`. YAML parsing must use `yaml.safe_load()`.
+  - Handle corrupt media, malformed YAML frontmatter, and non-UTF8 text defensively with graceful error reporting.
+- **Atomic State Integrity:**
+  - File writes must never leave partially written or corrupted files on disk. Always write to a sibling `.tmp` file and perform an atomic `os.replace`.
 
 ## Confidence Gate & Pushback
 
@@ -275,19 +349,17 @@ Dev tasks beyond trivial one-file edits: delegate to subagent. Two rules:
 
 Examples:
 - "Find where `X` is defined" → small model, minimal context.
-- "Implement function `Y` per spec at `path/to/file.go`" → mid-tier, scoped context.
+- "Implement function `Y` per spec at `path/to/file.py`" → mid-tier, scoped context.
 - "Refactor module `Z` across 5 files keeping tests green" → top-tier, fuller context.
 
 Main thread duties:
 - Decompose task before delegation.
 - Brief subagent: goal + files + constraints + success criteria. Brief carries lint/test
-  gate explicitly — implementer runs `golangci-lint run ./...` to **0 issues** + relevant
-  tests green **before committing** (not "at end"). Tell it to derive the active linter set
-  from `golangci-lint linters` + `.golangci.yml` `exclusions` instead of assuming one — never
-  hand it a linter list you have not verified, or it writes code for linters that never run.
+  gate explicitly — implementer runs `uv run ruff check --no-cache`, `uv run mypy`, and
+  `uv run pytest` to **0 issues / all green** **before committing** (not "at end").
 - Verify result yourself (tests, lint, behaviour) before merging. A subagent's "done" is an
   **unverified claim until you see the bytes**: re-read the files it says it changed + run
-  `git diff` on the working branch, then re-run build/lint/tests yourself — that green run is
+  `git diff` on the working branch, then re-run `pytest`/`mypy`/`ruff` yourself — that green run is
   the signal, NOT the self-report. No matching diff on disk = task NOT done, no matter what
   the subagent reported.
 - **Confirm the commit landed on the working branch.** A delegated commit can stray to an
@@ -296,8 +368,8 @@ Main thread duties:
   `git worktree prune`.
 - **IDE/compiler diagnostics are unreliable around delegation** — stale snapshots persist
   even AFTER the subagent finishes clean (phantom "undefined"/"redeclared" on regenerated
-  or just-edited files), not only during the RED phase. Trust a fresh `go build`/`vet`/lint
-  run on the branch over any editor diagnostic.
+  or just-edited files), not only during the RED phase. Trust a fresh `uv run ruff check` /
+  `uv run mypy` run on the branch over any editor diagnostic.
 
 Parallelisable independent tasks → spawn subagents in parallel
 (see `superpowers:dispatching-parallel-agents`).

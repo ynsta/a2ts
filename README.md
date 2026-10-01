@@ -148,17 +148,18 @@ uv run a2ts craig ./recordings/session-01/ \
 Re-open the interactive terminal review on a previous run without re-running transcription or diarization:
 
 ```bash
-uv run a2ts review .a2ts/<media-sha256> \
+uv run a2ts review .a2ts/sessions/<media-sha256> \
   --speakers ./contexte/speakers.txt \
   --output ./transcripts/session.md
 ```
+*(Note: passing `.a2ts` directly auto-resolves the single active session.)*
 
 ### 5. Re-Cluster with a Different Threshold
 
 Adjust the clustering distance cutoff if the initial run under- or over-segmented speakers:
 
 ```bash
-uv run a2ts recluster .a2ts/<media-sha256> \
+uv run a2ts recluster .a2ts/sessions/<media-sha256> \
   --cluster-threshold 0.40 \
   --output ./transcripts/session.md
 ```

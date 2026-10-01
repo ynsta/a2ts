@@ -64,6 +64,16 @@ dev = [
 src = ["src", "tests"]
 extend-exclude = ["scratch", ".superpowers", "docs"]
 
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+files = ["src", "tests"]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+
 [tool.uv.sources]
 transformers = { git = "https://github.com/huggingface/transformers" }
 

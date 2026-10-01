@@ -152,7 +152,10 @@ def test_resolve_session_dir_variations(tmp_path: Path) -> None:
     # 4. Direct session dir passed
     assert resolve_session_dir(sess1) == sess1
 
-    # 5. Multiple sessions inside cache_dir / "sessions"
+    # 5. Direct .a2ts/<hash> without sessions/ in path resolves to sess1
+    assert resolve_session_dir(cache_dir / "hash1") == sess1
+
+    # 6. Multiple sessions inside cache_dir / "sessions"
     sess2 = cache_dir / "sessions" / "hash2"
     sess2.mkdir(parents=True, exist_ok=True)
     (sess2 / "turns.json").write_text("[]")

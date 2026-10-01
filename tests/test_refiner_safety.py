@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -179,7 +180,7 @@ def test_refine_transcript_markdown_chunking_and_timeout() -> None:
         "Deuxieme replique avec deux dés six."
     )
 
-    def fake_subprocess_run(cmd, input, **kwargs):
+    def fake_subprocess_run(cmd: Any, input: str, **kwargs: Any) -> MagicMock:
         # Return valid refined chunk preserving header
         chunk_lines = input.split("Voici la transcription brute:\n\n")[-1].strip()
         mock = MagicMock()

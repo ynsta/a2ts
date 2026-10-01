@@ -158,9 +158,14 @@ class VoxtralEngine:
         self,
         model_name: str = "mistralai/Voxtral-Mini-3B-2507",
         load_4bit: bool = True,
+        device: str = "cuda",
+        compute_type: str = "float16",
+        **kwargs: Any,
     ) -> None:
         self.model_name = model_name
         self.load_4bit = load_4bit
+        self.device = device
+        self.compute_type = compute_type
         self._processor: Any = None
         self._model: Any = None
 
@@ -173,23 +178,25 @@ class VoxtralEngine:
                 VoxtralForConditionalGeneration,
             )
 
+            is_cuda = self.device == "cuda" and torch.cuda.is_available()
             with console.status(
-                f"[bold cyan]Loading Voxtral model '{self.model_name}' into GPU (4-bit NF4)...[/bold cyan]",
+                f"[bold cyan]Loading Voxtral model '{self.model_name}' on {self.device}...[/bold cyan]",
                 spinner="dots",
             ):
                 self._processor = AutoProcessor.from_pretrained(self.model_name)
                 quant_config = None
-                if self.load_4bit:
+                if self.load_4bit and is_cuda:
                     quant_config = BitsAndBytesConfig(
                         load_in_4bit=True,
                         bnb_4bit_compute_dtype=torch.bfloat16,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_use_double_quant=True,
                     )
+                device_map = "auto" if is_cuda else "cpu"
                 self._model = VoxtralForConditionalGeneration.from_pretrained(
                     self.model_name,
                     quantization_config=quant_config,
-                    device_map="auto",
+                    device_map=device_map,
                 )
             console.print("[green]✓ Voxtral model loaded.[/green]")
         return self._processor, self._model
@@ -219,11 +226,14 @@ class VoxtralEngine:
             }
         ]
 
+        target_device = (
+            "cuda" if self.device == "cuda" and torch.cuda.is_available() else "cpu"
+        )
         with console.status(
             "[bold cyan]Encoding audio waveform and prompt...[/bold cyan]",
             spinner="dots",
         ):
-            inputs = processor.apply_chat_template(conversation).to("cuda")
+            inputs = processor.apply_chat_template(conversation).to(target_device)
 
         streamer = None
         try:

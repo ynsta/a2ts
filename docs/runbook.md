@@ -155,7 +155,7 @@ uv run a2ts craig recordings/session_01/ --force
 uv run a2ts craig recordings/session_01/ \
   --context-dir contexte/ \
   --refine \
-  --refine-model gemini-2.5-flash \
+  --refine-model gemini-3.8-flash-low \
   --refine-effort low
 ```
 
@@ -167,7 +167,7 @@ uv run a2ts craig recordings/session_01/ \
 - `.a2ts/audio_cache/`: Stores normalized 16kHz mono WAV extracts. Safe to delete to free disk space; will be re-extracted on next run.
 - `.a2ts/transcripts/`: Raw ASR outputs and word timestamps. **Do not delete unless re-transcription is explicitly desired.**
 - `.a2ts/diarization/`: Acoustic turns and turn embeddings. Safe to delete if cluster parameters change.
-- `.a2ts/turns.json` & `.a2ts/speakers_mapping.json`: Session state for `review` and `split` subcommands.
+- `.a2ts/sessions/<media_hash>/`: Scoped session state containing `turns.json`, `speakers_mapping.json`, and `session.json` for `review`, `split`, and `recluster` subcommands.
 
 ### 3.2 Cleaning Session Cache
 ```bash
@@ -225,3 +225,39 @@ rm -rf recordings/session_01/.transcripts/
   - **SpeechBrain ECAPA-TDNN**: `python -c "from speechbrain.inference.speaker import EncoderClassifier; EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb')"`
   - **Tiktoken BPE**: `python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"`
 - Note that optional `--refine` requires external CLI access to `agy` and will egress network traffic if configured with hosted models like Gemini. Keep `--refine` disabled (the default) for air-gapped operations.
+
+---
+
+## 5. Developer Verification & Quality Gates
+
+All contributions and agent tasks must pass 4 verification gates before completion with 0 errors:
+
+### 5.1 Static Checks & Typing
+```bash
+# Linting
+uv run ruff check --no-cache
+
+# Formatting check
+uv run ruff format --check --no-cache
+
+# Static typing (PEP 561 / Python 3.13)
+uv run mypy
+```
+
+### 5.2 Test Execution (Test the WHAT, Not the HOW)
+Tests focus on observable inputs, outputs, schemas, and file states rather than internal implementation details:
+- **Avoid Over-Coverage**: Do not chase vanity coverage numbers that lock down internal helpers and make refactoring painful.
+- **Macro Benchmarks**: Performance and packaging invariant tests verify operational scaling without testing micro-mechanics.
+
+```bash
+# Run full test suite
+uv run pytest
+
+# Run fast unit tests with verbose names
+uv run pytest -v tests/test_refiner_safety.py
+
+# Run packaging and performance invariant benchmarks
+uv run pytest -v tests/test_packaging_and_perf.py
+```
+
+

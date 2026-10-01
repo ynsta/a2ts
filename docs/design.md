@@ -92,17 +92,17 @@ flowchart TD
   2. Wikilinks: internal references formatted as `[[Entity Name]]` or `[[Target|Alias]]`.
   3. Structural Headings: markdown headers (`# Title`, `## Subheading`).
 - Sorts entities by frequency and length, deduplicates case-insensitively, and encodes with OpenAI `cl100k_base` BPE tokenizer (`tiktoken`).
-- Truncates to a fixed token budget (default: 250 tokens) to fit within ASR prompt limits without degrading acoustic attention.
+- Truncates to a fixed token budget (default: 220 tokens, Whisper max 224 tokens) to fit within ASR prompt limits without degrading acoustic attention.
 
 ### 2.3 Dual-Engine Speech Recognition (`transcriber.py`)
-The pipeline abstracts ASR implementations behind `BaseTranscriber`:
-- **`WhisperTranscriber`**:
+The pipeline abstracts ASR implementations behind `TranscriberEngine` (Protocol):
+- **`WhisperEngine`**:
   - Encapsulates `faster_whisper.WhisperModel`.
-  - Configured with `beam_size=5`, `vad_filter=True`, `word_timestamps=True`.
+  - Configured with `vad_filter=True`, `word_timestamps=True`.
   - Feeds the mined lore prompt via the `initial_prompt` parameter.
   - Produces `RawSegment` instances with sub-segment `WordTimestamp` arrays.
-- **`VoxtralTranscriber`**:
-  - Wraps Mistral AI's multimodal model (`mistralai/Voxtral-Mini-3B-2507`) using Hugging Face `transformers`.
+- **`VoxtralEngine`**:
+  - Wraps Mistral AI's multimodal model (`mistralai/Voxtral-Mini-3B-2507`) using Hugging Face `transformers` with 4-bit NF4 quantization.
   - Ingests raw audio waveform and prompt context, generating transcripts natively.
 
 ### 2.4 Hybrid Acoustic Diarization & Speaker Identification (`diarizer.py`)
@@ -185,9 +185,9 @@ class SpeakerTurn(BaseModel):
     end: float
     cluster_id: str
     resolved_speaker: str | None = None
-    confidence: float = 1.0
     time_slice_id: int = 0
     flagged: bool = False
+    notes: str = ""
 
 
 class AlignedTurn(BaseModel):
@@ -197,9 +197,8 @@ class AlignedTurn(BaseModel):
     speaker: str
     cluster_id: str
     text: str
-    words: list[WordTimestamp] = []
+    words: list[WordTimestamp] = Field(default_factory=list)
     time_slice_id: int = 0
-    flagged: bool = False
 
 
 class VoiceProfile(BaseModel):
@@ -215,12 +214,13 @@ class VoiceProfilesDatabase(BaseModel):
 
 
 class TranscriptCacheProvenance(BaseModel):
-    schema_version: int = 1
+    version: int = 1
     media_hash: str
     engine: str
     model_name: str
     compute_type: str
-    prompt_hash: str
+    prompt_hash: str = "no_prompt"
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class TranscriptCacheFile(BaseModel):

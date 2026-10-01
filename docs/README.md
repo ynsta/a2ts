@@ -23,7 +23,8 @@ docs/
 │   ├── 0002-dual-transcription-engines-voxtral-and-whisper.md
 │   ├── 0003-speaker-diarization-nemotron-and-ecapa-hybrid.md
 │   ├── 0004-interactive-speaker-attribution-and-time-slicing.md
-│   └── 0005-local-llm-refinement-via-agy-cli.md
+│   ├── 0005-local-llm-refinement-via-agy-cli.md
+│   └── 0006-craig-multi-track-discord-pipeline.md
 └── archive/                # HISTORICAL: Deprecated/archived transient plans and session notes
     └── README.md
 ```
