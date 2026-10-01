@@ -1891,3 +1891,139 @@ def test_cli_run_auto_enroll_rejects_stale_turn_embeddings_with_no_profile_db(
         assert "Alice" in db.speakers
         # Must match fresh extraction [1.0, 0.0, 0.0, 0.0], NOT stale [0.0, 0.0, 0.0, 1.0]
         assert db.speakers["Alice"].centroid == [1.0, 0.0, 0.0, 0.0]
+
+
+def test_recluster_cache_identity_and_run_hit(tmp_path: Path) -> None:
+    """Test recluster sets exact transcript provenance hash, clears splits, and subsequent run hits diarization cache."""
+    import numpy as np
+
+    from a2ts.models import (
+        ClusterSplit,
+        DiarizationCacheFile,
+        EmbeddingCacheProvenance,
+        RawSegment,
+        SessionMetadata,
+        SpeakersMapping,
+        TranscriptCacheFile,
+        TranscriptCacheProvenance,
+    )
+    from a2ts.speaker_review import load_speakers_mapping
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    media_file = tmp_path / "audio.wav"
+    media_file.write_bytes(b"RIFF dummy wav data")
+    media_hash = "abc123testmediahash"
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir(parents=True)
+    trans_prov = TranscriptCacheProvenance(
+        media_hash=media_hash,
+        engine="whisper",
+        model_name="large-v3",
+        compute_type="int8",
+        prompt_hash="no_prompt",
+    )
+    expected_trans_hash = trans_prov.compute_hash()
+    raw_segs = [
+        RawSegment(id=0, start=0.0, end=2.0, text="First utterance", words=[]),
+        RawSegment(id=1, start=3.0, end=5.0, text="Second utterance", words=[]),
+    ]
+    trans_file = TranscriptCacheFile(provenance=trans_prov, segments=raw_segs)
+    (transcripts_dir / f"{media_hash}_whisper.json").write_text(
+        trans_file.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+    emb_matrix = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    np.save(diar_dir / f"{media_hash}_segment_embeddings.npy", emb_matrix)
+    (diar_dir / f"{media_hash}_segment_indices.json").write_text(
+        "[0, 1]", encoding="utf-8"
+    )
+    seg_prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash=media_hash,
+        count=2,
+        transcript_provenance_hash=expected_trans_hash,
+    )
+    (diar_dir / f"{media_hash}_segment_embeddings_provenance.json").write_text(
+        seg_prov.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    session_meta = SessionMetadata(
+        media_path=str(media_file),
+        media_hash=media_hash,
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-10-01T00:00:00Z",
+        output_path=str(tmp_path / "out.md"),
+    )
+    (session_dir / "session.json").write_text(
+        session_meta.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    split_rule = ClusterSplit(
+        cluster_id="SPEAKER_00", at=1.0, new_cluster_id="SPEAKER_SPLIT"
+    )
+    mapping = SpeakersMapping(
+        splits=[split_rule], cluster_defaults={"SPEAKER_00": "Alice"}
+    )
+    mapping_path = session_dir / "speakers_mapping.json"
+    mapping_path.write_text(mapping.model_dump_json(indent=2), encoding="utf-8")
+
+    result_recluster = runner.invoke(
+        app, ["recluster", str(session_dir), "--device", "cpu"]
+    )
+    assert result_recluster.exit_code == 0, (
+        f"Recluster failed: {result_recluster.stdout}"
+    )
+
+    # 1. Verify diarization cache provenance transcript_provenance_hash equals transcript cache provenance hash (NOT "no_prompt")
+    diar_cache_file = diar_dir / f"{media_hash}.json"
+    assert diar_cache_file.is_file()
+    diar_cache = DiarizationCacheFile.model_validate_json(
+        diar_cache_file.read_text(encoding="utf-8")
+    )
+    assert diar_cache.provenance.transcript_provenance_hash == expected_trans_hash
+    assert diar_cache.provenance.transcript_provenance_hash != "no_prompt"
+
+    # 2. Verify mapping.splits is cleared
+    saved_mapping = load_speakers_mapping(mapping_path)
+    assert saved_mapping.splits == []
+
+    # 3. Run a2ts run on the session; verify it hits diarization cache without re-extracting or re-diarizing
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value=media_hash),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=media_file),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.diarizer.extract_embeddings_for_segments") as mock_extract_segs,
+        patch("a2ts.diarizer.diarize_nemotron") as mock_nemotron,
+    ):
+        result_run = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--cache-dir",
+                str(session_dir),
+                "--output",
+                str(tmp_path / "out.md"),
+                "--device",
+                "cpu",
+                "--compute-type",
+                "int8",
+                "--diarizer-engine",
+                "ecapa",
+                "--no-interactive",
+                "--no-refine",
+            ],
+        )
+
+    assert result_run.exit_code == 0, f"Run failed: {result_run.stdout}"
+    mock_extract_segs.assert_not_called()
+    mock_nemotron.assert_not_called()
+    assert "Loading cached diarization" in result_run.output

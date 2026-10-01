@@ -54,6 +54,7 @@ from a2ts.models import (
     RawSegment,
     SessionMetadata,
     SpeakerTurn,
+    TranscriptCacheFile,
     TranscriptCacheProvenance,
     VoiceProfilesDatabase,
 )
@@ -1198,17 +1199,38 @@ def recluster(
             )
             raise typer.Exit(code=1)
 
+    trans_prov: TranscriptCacheProvenance | None = None
+    raw_segments: list[RawSegment]
     try:
-        cache_data = json.loads(transcripts_cache.read_text(encoding="utf-8"))
-        if isinstance(cache_data, dict) and "segments" in cache_data:
-            raw_segments = [
-                RawSegment.model_validate(seg) for seg in cache_data["segments"]
-            ]
-        else:
-            raw_segments = [RawSegment.model_validate(seg) for seg in cache_data]
+        raw_text = transcripts_cache.read_text(encoding="utf-8")
+        try:
+            parsed_cache = TranscriptCacheFile.model_validate_json(raw_text)
+            trans_prov = parsed_cache.provenance
+            raw_segments = parsed_cache.segments
+        except (ValueError, KeyError, OSError, json.JSONDecodeError):
+            cache_data = json.loads(raw_text)
+            if isinstance(cache_data, dict) and "segments" in cache_data:
+                raw_segments = [
+                    RawSegment.model_validate(seg) for seg in cache_data["segments"]
+                ]
+                if "provenance" in cache_data:
+                    try:
+                        trans_prov = TranscriptCacheProvenance.model_validate(
+                            cache_data["provenance"]
+                        )
+                    except (ValueError, KeyError):
+                        trans_prov = None
+            elif isinstance(cache_data, list):
+                raw_segments = [RawSegment.model_validate(seg) for seg in cache_data]
+            else:
+                raise ValueError("Unrecognized transcripts cache format")
     except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
         console.print(f"[bold red]Failed to load raw segments: {exc}[/bold red]")
         raise typer.Exit(code=1)
+
+    expected_trans_hash: str | None = (
+        trans_prov.compute_hash() if trans_prov is not None else None
+    )
 
     diarization_dir = session_dir / "diarization"
     if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
@@ -1223,14 +1245,16 @@ def recluster(
         diar_cache_file = diarization_dir / f"{media_hash}.json"
         if diar_cache_file.is_file():
             try:
-                diar_data = json.loads(diar_cache_file.read_text(encoding="utf-8"))
-                if isinstance(diar_data, dict) and "provenance" in diar_data:
-                    existing_device = diar_data["provenance"].get("device")
-                    p_engine = diar_data["provenance"].get(
-                        "resolved_engine"
-                    ) or diar_data["provenance"].get("engine")
-                    if p_engine == "nemotron":
-                        is_nemotron = True
+                cached_diar = DiarizationCacheFile.model_validate_json(
+                    diar_cache_file.read_text(encoding="utf-8")
+                )
+                existing_device = cached_diar.provenance.device
+                p_engine = (
+                    cached_diar.provenance.resolved_engine
+                    or cached_diar.provenance.engine
+                )
+                if p_engine == "nemotron":
+                    is_nemotron = True
             except (json.JSONDecodeError, OSError, ValueError, KeyError):
                 pass
 
@@ -1241,16 +1265,6 @@ def recluster(
         )
         raise typer.Exit(code=1)
 
-    expected_trans_hash: str | None = None
-    if isinstance(cache_data, dict) and "provenance" in cache_data:
-        try:
-            trans_prov = TranscriptCacheProvenance.model_validate(
-                cache_data["provenance"]
-            )
-            expected_trans_hash = trans_prov.compute_hash()
-        except (ValueError, KeyError, OSError):
-            expected_trans_hash = None
-
     seg_embs = load_segment_embeddings(
         cache_prefix=diarization_dir / media_hash,
         media_hash=media_hash,
@@ -1258,9 +1272,8 @@ def recluster(
     )
     if seg_embs is None:
         console.print(
-            f"[bold red]Embeddings cache not found at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}. "
-            "Reclustering requires segment embeddings from ECAPA diarization; "
-            "sessions diarized with Nemotron cannot be reclustered[/bold red]"
+            f"[bold red]Embeddings cache not found or invalid at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}. "
+            "Reclustering requires valid segment embeddings from ECAPA diarization.[/bold red]"
         )
         raise typer.Exit(code=1)
 
@@ -1336,13 +1349,11 @@ def recluster(
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
-    # Clear stale cluster defaults and label sources because cluster boundaries and IDs have changed
+    # Clear stale cluster defaults, label sources, slice overrides, and splits because cluster boundaries and IDs have changed
     mapping.cluster_defaults.clear()
     mapping.label_sources.clear()
     mapping.slice_overrides.clear()
-
-    if mapping.splits:
-        aligned_turns = apply_splits_to_turns(aligned_turns, mapping.splits)
+    mapping.splits.clear()
 
     turns_path = session_dir / "turns.json"
     atomic_write_text(
@@ -1367,8 +1378,7 @@ def recluster(
         cluster_threshold=cluster_threshold,
         num_speakers=num_speakers,
         device=device_resolved,
-        transcript_provenance_hash=expected_trans_hash
-        or (session_meta.prompt_hash if session_meta.prompt_hash else None),
+        transcript_provenance_hash=expected_trans_hash,
     )
     save_diarization_cache(diar_cache, diar_prov, speaker_turns)
 

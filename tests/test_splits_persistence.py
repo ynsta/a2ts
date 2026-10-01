@@ -240,8 +240,8 @@ def test_closed_set_and_unconfirmed_matches_not_enrolled(tmp_path: Path) -> None
     assert "Bob" not in db.speakers
 
 
-def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
-    """recluster command must apply persisted splits from speakers_mapping.json to regenerated turns."""
+def test_recluster_clears_persisted_splits(tmp_path: Path) -> None:
+    """recluster command must clear persisted splits from speakers_mapping.json and not apply old splits."""
     session_dir = tmp_path / "session_recluster"
     session_dir.mkdir(parents=True)
     media_hash = "fake_media_hash"
@@ -317,13 +317,16 @@ def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
     result = runner.invoke(app, ["recluster", str(session_dir)])
     assert result.exit_code == 0, f"Recluster failed: {result.stdout}"
 
-    # Verify turns.json has split applied
+    # Verify speakers_mapping.json has splits cleared
+    saved_mapping = load_speakers_mapping(mapping_path)
+    assert saved_mapping.splits == []
+
+    # Verify turns.json does NOT have old split applied (remains SPEAKER_00 for all segments)
     turns_path = session_dir / "turns.json"
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
     assert turns_data[0]["cluster_id"] == "SPEAKER_00"
     assert turns_data[1]["cluster_id"] == "SPEAKER_00"
-    # Third turn starts at 40s >= 30s, so it should be SPEAKER_SPLIT
-    assert turns_data[2]["cluster_id"] == "SPEAKER_SPLIT"
+    assert turns_data[2]["cluster_id"] == "SPEAKER_00"
 
 
 def test_review_closed_set_skips_voice_profile_auto_enrollment(tmp_path: Path) -> None:
