@@ -17,7 +17,7 @@ flowchart TD
     MediaStage --> MonoWav["Normalized 16kHz Mono WAV\n(.a2ts/audio_cache/)"]
     
     LoreNotes["Obsidian Vault / Lore Notes\n(contexte/*.md)"] --> VocabStage["vocab.py\n(Entity & Wikilink Mining)"]
-    VocabStage --> LorePrompt["Lore Prompt (< 220 tokens)\n(cl100k_base BPE)"]
+    VocabStage --> LorePrompt["Lore Prompt (< 180 tokens)\n(cl100k_base BPE)"]
     
     MonoWav --> ASRStage["transcriber.py\n(Whisper or Voxtral Engine)"]
     LorePrompt --> ASRStage
@@ -57,7 +57,7 @@ flowchart TD
     LoreVault["Obsidian Lore Notes\n(contexte/*.md)"] --> LoreScanner["craig.py & vocab.py\n(scan_context_directory)"]
     SpeakerMetadata --> CraigPromptBuilder["craig.py\n(build_craig_prompt: names + lore)"]
     LoreScanner --> CraigPromptBuilder
-    CraigPromptBuilder --> CraigPrompt["Biasing Prompt (< 220 tokens)"]
+    CraigPromptBuilder --> CraigPrompt["Biasing Prompt (< 180 tokens)"]
     
     Tracks --> TranscribeTrack["craig.py\n(transcribe_craig_track: Faster-Whisper)"]
     CraigPrompt --> TranscribeTrack
@@ -92,7 +92,7 @@ flowchart TD
   2. Wikilinks: internal references formatted as `[[Entity Name]]` or `[[Target|Alias]]`.
   3. Structural Headings: markdown headers (`# Title`, `## Subheading`).
 - Sorts entities by frequency and length, deduplicates case-insensitively, and encodes with OpenAI `cl100k_base` BPE tokenizer (`tiktoken`).
-- Truncates to a fixed token budget (default: 220 tokens, Whisper max 224 tokens) to fit within ASR prompt limits without degrading acoustic attention.
+- Truncates to a fixed token budget (default: 180 tokens, Whisper max 224 tokens) to fit within ASR prompt limits without degrading acoustic attention.
 
 ### 2.3 Dual-Engine Speech Recognition (`transcriber.py`)
 The pipeline abstracts ASR implementations behind `TranscriberEngine` (Protocol):
@@ -152,7 +152,7 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
 - **Track Discovery & Username Extraction**: Scans `recording_dir` matching `^(\d+)-(.*)\.flac$` sorted numerically by track index. Extracts Discord usernames directly from track file stems (e.g. `1-merrow1.flac` -> `merrow1`).
 - **Speaker Roster Parsing (`speakers.md`)**: Parses lines formatted as `* username: Character Name, Role, surnoms: (Nick1, Nick2)`. Detects Game Master roles (`is_dm`) via regex matching keywords (`MJ`, `DM`, `GM`, `Maître du Jeu`). Falls back to track username when unmapped.
 - **Recording Metadata Parsing (`info.txt`)**: Extracts guild, channel, start time, and registered Discord user IDs from Craig's metadata summary.
-- **Context-Aware Biasing Prompt**: Combines character names, nicknames, and Discord usernames with mined Obsidian lore (`vocab.py`), budgeted to 220 tokens to maximize transcription accuracy for fantasy terminology.
+- **Context-Aware Biasing Prompt**: Combines character names, nicknames, and Discord usernames with mined Obsidian lore (`vocab.py`), budgeted to 180 tokens to maximize transcription accuracy for fantasy terminology.
 - **Discrete Track Caching with VAD & Language**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation verifies file size, mtime, model, compute type, prompt hash, VAD filter (`vad_filter`), VAD parameters (`vad_parameters`), and transcription language (`language='fr'`).
 - **Chronological Segment Interleaving**: Interleaves multi-track segments using `merge_craig_tracks_to_turns()` sorted by `(seg.start, track_id)`. Bypasses acoustic diarization and clustering entirely because physical track separation provides exact speaker isolation.
 - **Debouncing & Refinement**: Seamlessly chains into `consolidator.py` (`debounce_consecutive_turns()`, `render_markdown_transcript()`) and optional `refiner.py` (`refine_transcript_markdown()`).

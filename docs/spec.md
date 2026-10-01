@@ -45,7 +45,7 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 - Scans user Obsidian vaults or Markdown context directories (default: `contexte/`).
 - Extracts named entities, `[[wikilinks]]`, YAML frontmatter `aliases:`, and document headings (`#`, `##`, etc.).
 - Deduplicates and tokenizes discovered terms using `cl100k_base` BPE tokenizer.
-- Packs extracted terms into a token-budgeted prompt (default: 220 tokens, Whisper max 224 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
+- Packs extracted terms into a token-budgeted prompt (default: 180 tokens, Whisper max 224 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
 
 ### 3.3 Dual-Engine Speech Recognition (ASR)
 - **Faster-Whisper**:

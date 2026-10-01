@@ -1,14 +1,18 @@
 """Unit tests for Obsidian lore and vocabulary mining."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
 import tiktoken
 
 from a2ts.models import EntityRecord
 from a2ts.vocab import (
     build_biasing_prompt,
+    clean_entity_name,
     count_tokens,
     extract_candidates_from_markdown,
+    get_tokenizer,
     load_speaker_names,
     load_wordlist_file,
     scan_context_directory,
@@ -114,7 +118,7 @@ def test_build_biasing_prompt_dedup_and_whitespace() -> None:
         EntityRecord(name="garrick hautbois", kind="heading"),
         EntityRecord(name="Phandaline", kind="wikilink"),
     ]
-    prompt = build_biasing_prompt(entities, max_tokens=220)
+    prompt = build_biasing_prompt(entities, max_tokens=180)
     assert prompt == "Garrick Hautbois, Phandaline"
 
 
@@ -161,18 +165,49 @@ def test_load_speaker_names(tmp_path: Path) -> None:
     ]
 
 
+def test_clean_entity_name() -> None:
+    """clean_entity_name must strip Whisper/GPT control tokens and normalize whitespace."""
+    assert clean_entity_name("<|endoftext|>") == ""
+    assert clean_entity_name("<|startoftranscript|>Garrick<|endoftext|>") == "Garrick"
+    assert clean_entity_name("  Lord   <|fim_prefix|>  Voldemort  ") == "Lord Voldemort"
+    assert clean_entity_name("<|custom_token|>") == ""
+    assert clean_entity_name("Simple Name") == "Simple Name"
+
+
 def test_special_tokens_handling() -> None:
-    """Special tokens like <|endoftext|> must be treated as literal text and not crash."""
-    special_names = [
-        "<|endoftext|>",
-        "<|fim_prefix|>",
-        "<|fim_middle|>",
-        "<|endofprompt|>",
+    """Special tokens like <|endoftext|> must be stripped from candidate entities to avoid Whisper truncation."""
+    special_entities = [
+        EntityRecord(
+            name="<|startoftranscript|>Garrick<|endoftext|>", kind="character"
+        ),
+        EntityRecord(name="Lord <|fim_prefix|>Voldemort", kind="custom"),
+        EntityRecord(name="<|endoftext|>", kind="custom"),
     ]
-    entities = [EntityRecord(name=name, kind="custom") for name in special_names]
-    prompt = build_biasing_prompt(entities)
-    for name in special_names:
-        assert name in prompt
+    prompt = build_biasing_prompt(special_entities)
+    assert "Garrick" in prompt
+    assert "Lord Voldemort" in prompt
+    assert "<|endoftext|>" not in prompt
+    assert "<|startoftranscript|>" not in prompt
+    assert "<|fim_prefix|>" not in prompt
+
+
+def test_extract_candidates_control_tokens_stripped() -> None:
+    """Wikilinks, aliases, and headings with Whisper control tokens must be sanitized."""
+    content = """
+aliases:
+  - "<|startoftranscript|>L'Ombre Rouge<|endoftext|>"
+
+## <|transcribe|>Kaelen Sombreflèche
+
+Le personnage voyage vers [[<|endoftext|>Phandaline]].
+"""
+    entities = extract_candidates_from_markdown(content, "session.md")
+    names = {e.name for e in entities}
+    assert "L'Ombre Rouge" in names
+    assert "Kaelen Sombreflèche" in names
+    assert "Phandaline" in names
+    for name in names:
+        assert "<|" not in name
 
 
 def test_build_biasing_prompt_priority_ordering() -> None:
@@ -211,19 +246,20 @@ def test_count_tokens() -> None:
 
 
 def test_special_tokens_with_explicit_tiktoken() -> None:
-    """Explicit tiktoken encoding must treat special tokens as literal text without error."""
+    """Explicit tiktoken encoding must treat special tokens as literal text in count_tokens, and prompt building strips them."""
     enc = tiktoken.get_encoding("cl100k_base")
     # count_tokens with explicit tiktoken
     tokens = count_tokens("<|endoftext|> <|fim_middle|> <|endofprompt|>", tokenizer=enc)
     assert tokens > 0
 
     entities = [
-        EntityRecord(name="<|endoftext|>", kind="custom"),
+        EntityRecord(name="<|endoftext|>Garrick", kind="custom"),
         EntityRecord(name="<|fim_prefix|>", kind="custom"),
     ]
     prompt = build_biasing_prompt(entities, tokenizer=enc)
-    assert "<|endoftext|>" in prompt
-    assert "<|fim_prefix|>" in prompt
+    assert prompt == "Garrick"
+    assert "<|endoftext|>" not in prompt
+    assert "<|fim_prefix|>" not in prompt
 
 
 def test_count_tokens_custom_tokenizer() -> None:
@@ -243,3 +279,54 @@ def test_build_biasing_prompt_strictly_respects_max_tokens() -> None:
     ]
     prompt = build_biasing_prompt(entities, max_tokens=50)
     assert count_tokens(prompt) <= 50
+
+
+def test_get_tokenizer_hf_cache_env_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """get_tokenizer must respect HF_HUB_CACHE and HF_HOME environment variables."""
+    import a2ts.vocab as vocab_module
+
+    # Create dummy hub structure
+    hub_dir = tmp_path / "custom_hub"
+    model_dir = hub_dir / "models--openai--whisper-large-v3" / "snapshots" / "main"
+    model_dir.mkdir(parents=True)
+    tok_json = model_dir / "tokenizer.json"
+    tok_json.write_text("{}", encoding="utf-8")
+
+    # 1. Test HF_HUB_CACHE takes precedence
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub_dir))
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(vocab_module, "_CACHED_TOKENIZER", None)
+
+    mock_from_file = MagicMock()
+    mock_fw_tok = MagicMock()
+    monkeypatch.setattr("tokenizers.Tokenizer.from_file", mock_from_file)
+    monkeypatch.setattr("faster_whisper.tokenizer.Tokenizer", mock_fw_tok)
+
+    tok = get_tokenizer()
+    assert tok == mock_fw_tok.return_value
+    mock_from_file.assert_called_once_with(str(tok_json))
+
+    # 2. Test HF_HOME when HF_HUB_CACHE is not set
+    home_dir = tmp_path / "custom_home"
+    home_hub = home_dir / "hub"
+    home_model_dir = (
+        home_hub / "models--openai--whisper-large-v3" / "snapshots" / "main"
+    )
+    home_model_dir.mkdir(parents=True)
+    home_tok_json = home_model_dir / "tokenizer.json"
+    home_tok_json.write_text("{}", encoding="utf-8")
+
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setenv("HF_HOME", str(home_dir))
+    monkeypatch.setattr(vocab_module, "_CACHED_TOKENIZER", None)
+    mock_from_file.reset_mock()
+    mock_fw_tok.reset_mock()
+
+    tok2 = get_tokenizer()
+    assert tok2 == mock_fw_tok.return_value
+    mock_from_file.assert_called_once_with(str(home_tok_json))
+
+    # Clean up cached tokenizer
+    monkeypatch.setattr(vocab_module, "_CACHED_TOKENIZER", None)

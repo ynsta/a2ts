@@ -251,7 +251,7 @@ def compute_track_provenance(
 def build_craig_prompt(
     speakers: dict[str, SpeakerInfo],
     context_dir: Path | None = None,
-    max_tokens: int = 220,
+    max_tokens: int = 180,
 ) -> str:
     """Assemble token-budgeted prompt containing speaker/character names and Obsidian lore terms."""
     records: list[EntityRecord] = []

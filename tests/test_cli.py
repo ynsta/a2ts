@@ -1,12 +1,13 @@
 """Basic tests for a2ts CLI."""
 
+import inspect
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from a2ts.cli import app, resolve_device_and_compute_type
+from a2ts.cli import app, extract_vocab, resolve_device_and_compute_type
 from a2ts.models import (
     AlignedTurn,
     EmbeddingCacheProvenance,
@@ -50,6 +51,14 @@ def test_extract_vocab_command(tmp_path: Path) -> None:
     assert "Extracted 2 entity mentions" in result.output
     assert "Valeros" in result.output
     assert "Seoni" in result.output
+
+
+def test_extract_vocab_default_max_tokens() -> None:
+    """extract_vocab command parameter max_tokens must default to 180."""
+    sig = inspect.signature(extract_vocab)
+    param = sig.parameters["max_tokens"]
+    # typer Annotated default or default value
+    assert getattr(param.default, "default", param.default) == 180
 
 
 @patch("a2ts.cli.extract_audio_to_wav")

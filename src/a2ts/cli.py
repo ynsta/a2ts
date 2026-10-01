@@ -247,7 +247,7 @@ def extract_vocab(
     ] = None,
     max_tokens: Annotated[
         int, typer.Option(help="Maximum token budget for prompt")
-    ] = 220,
+    ] = 180,
 ) -> None:
     """Extract lore entities and print token-budgeted prompt."""
     entities = scan_context_directory(context_dir)

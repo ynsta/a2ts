@@ -1,6 +1,7 @@
 """Lore extraction and token-budgeted prompt construction."""
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,17 @@ from a2ts.models import EntityRecord
 
 logger = logging.getLogger(__name__)
 
+CONTROL_TOKEN_PATTERN = re.compile(r"<\|.*?\|>")
 WIKILINK_PATTERN = re.compile(r"\[\[([^|\]]+)(?:\|([^\]]+))?\]\]")
 ALIAS_BLOCK_PATTERN = re.compile(r"(?m)^aliases:\s*\n((?:\s*-\s*.+\n)+)")
 HEADING_PATTERN = re.compile(r"(?m)^##\s+([^\n#]+)")
+
+
+def clean_entity_name(name: str) -> str:
+    """Sanitize entity name by stripping Whisper/GPT control tokens (<|.*?|>) and normalizing whitespace."""
+    cleaned = CONTROL_TOKEN_PATTERN.sub("", name)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
 
 IGNORED_EXTENSIONS = {
     ".png",
@@ -92,7 +101,13 @@ def get_tokenizer() -> Any:
         import tokenizers  # type: ignore[import-untyped]
         from faster_whisper.tokenizer import Tokenizer  # type: ignore[import-untyped]
 
-        hf_hub = Path.home() / ".cache" / "huggingface" / "hub"
+        if "HF_HUB_CACHE" in os.environ:
+            hf_hub = Path(os.environ["HF_HUB_CACHE"])
+        elif "HF_HOME" in os.environ:
+            hf_hub = Path(os.environ["HF_HOME"]) / "hub"
+        else:
+            hf_hub = Path.home() / ".cache" / "huggingface" / "hub"
+
         if hf_hub.is_dir():
             tok_files = sorted(hf_hub.glob("models--*whisper*/**/tokenizer.json"))
             if tok_files:
@@ -129,12 +144,13 @@ def count_tokens(text: str, tokenizer: Any = None) -> int:
 def extract_candidates_from_markdown(content: str, filename: str) -> list[EntityRecord]:
     """Parse wikilinks, frontmatter aliases, and headings from markdown text."""
     records: list[EntityRecord] = []
+    content = CONTROL_TOKEN_PATTERN.sub("", content)
 
     for match in WIKILINK_PATTERN.finditer(content):
         target = match.group(1).strip()
         alias = match.group(2).strip() if match.group(2) else None
         clean_target = target.split("#", 1)[0].strip()
-        name = alias if alias else clean_target
+        name = clean_entity_name(alias if alias else clean_target)
 
         if any(name.lower().endswith(ext) for ext in IGNORED_EXTENSIONS):
             continue
@@ -149,13 +165,14 @@ def extract_candidates_from_markdown(content: str, filename: str) -> list[Entity
             alias_match = re.match(r"^\s*-\s*(.+)$", line)
             if alias_match:
                 alias = alias_match.group(1).strip().strip("\"'")
+                alias = clean_entity_name(alias)
                 if alias and alias.lower() not in FRENCH_STOPWORDS:
                     records.append(
                         EntityRecord(name=alias, kind="alias", source_file=filename)
                     )
 
     for match in HEADING_PATTERN.finditer(content):
-        heading = match.group(1).strip()
+        heading = clean_entity_name(match.group(1).strip())
         if heading and heading.lower() not in FRENCH_STOPWORDS:
             records.append(
                 EntityRecord(name=heading, kind="heading", source_file=filename)
@@ -208,7 +225,7 @@ def build_biasing_prompt(
     unique_names: list[str] = []
 
     for e in sorted_entities:
-        cleaned = re.sub(r"\s+", " ", e.name).strip()
+        cleaned = clean_entity_name(e.name)
         if cleaned and cleaned.lower() not in seen:
             seen.add(cleaned.lower())
             unique_names.append(cleaned)

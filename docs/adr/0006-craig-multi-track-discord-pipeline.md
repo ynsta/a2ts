@@ -35,7 +35,7 @@ We chose to implement a dedicated multi-track adapter and command, `a2ts craig`:
 2. **Roster & Metadata Ingestion**:
    - Parses human-edited `speakers.md` roster files to map usernames to character names, roles, nicknames, and Game Master (`is_dm`) designations.
    - Parses Craig's `info.txt` to capture recording metadata (guild, channel, start time, user IDs).
-   - Combines character identities and Obsidian lore into a token-budgeted prompt (220 tokens) via `vocab.py`.
+   - Combines character identities and Obsidian lore into a token-budgeted prompt (180 tokens) via `vocab.py`.
 
 3. **Discrete Track Transcription & Provenance Caching**:
    - Each track is transcribed independently via Faster-Whisper with word-level timestamps, voice activity detection (`vad_filter=True`), and language hints (`language="fr"`).

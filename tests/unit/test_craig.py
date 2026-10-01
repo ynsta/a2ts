@@ -336,6 +336,29 @@ def test_build_craig_prompt(tmp_path: Path) -> None:
     assert build_craig_prompt(speakers, context_dir=non_existent) == prompt
 
 
+def test_build_craig_prompt_default_budget_is_180() -> None:
+    """Default max_tokens for build_craig_prompt must be 180."""
+    import inspect
+
+    sig = inspect.signature(build_craig_prompt)
+    assert sig.parameters["max_tokens"].default == 180
+
+
+def test_build_craig_prompt_strips_control_tokens() -> None:
+    """build_craig_prompt must strip Whisper control tokens from character names and nicknames."""
+    speakers = {
+        "user1": SpeakerInfo(
+            discord_username="user1",
+            character_name="<|startoftranscript|>Garrick<|endoftext|>",
+            nicknames=["<|fim_prefix|>Mimi"],
+        )
+    }
+    prompt = build_craig_prompt(speakers)
+    assert "Garrick" in prompt
+    assert "Mimi" in prompt
+    assert "<|" not in prompt
+
+
 def test_compute_track_provenance(tmp_path: Path) -> None:
     track_file = tmp_path / "1-merrow1.flac"
     track_file.write_bytes(b"dummy audio data for testing 12345")
