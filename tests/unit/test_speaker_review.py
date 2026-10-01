@@ -606,3 +606,48 @@ def test_resolve_speaker_for_turn_precedence() -> None:
         )
         == "SPEAKER_00"
     )
+
+
+def test_run_interactive_review_saves_progress_incrementally(tmp_path: Path) -> None:
+    mapping_path = tmp_path / "speakers_mapping.json"
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="First speaker turn",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=6.0,
+            end=10.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Second speaker turn",
+        ),
+    ]
+    candidates = ["Alice", "Bob"]
+
+    prompt_inputs = ["1", KeyboardInterrupt()]
+
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs):
+        try:
+            run_interactive_review(turns, candidates, mapping_path=mapping_path)
+        except KeyboardInterrupt:
+            pass
+
+    assert mapping_path.is_file()
+    saved = load_speakers_mapping(mapping_path)
+    assert saved.cluster_defaults.get("SPEAKER_00") == "Alice"
+
+
+def test_save_speakers_mapping_argument_order(tmp_path: Path) -> None:
+    mapping = SpeakersMapping(cluster_defaults={"SPEAKER_00": "Alice"})
+    p1 = tmp_path / "mapping1.json"
+    p2 = tmp_path / "mapping2.json"
+    save_speakers_mapping(mapping, p1)
+    save_speakers_mapping(p2, mapping)
+    assert load_speakers_mapping(p1).cluster_defaults == {"SPEAKER_00": "Alice"}
+    assert load_speakers_mapping(p2).cluster_defaults == {"SPEAKER_00": "Alice"}

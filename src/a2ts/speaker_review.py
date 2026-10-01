@@ -3,11 +3,12 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from rich.console import Console
 from rich.prompt import Prompt
 
+from a2ts.cache import atomic_write_text
 from a2ts.media import play_audio_clip_async, stop_audio_playback
 from a2ts.models import AlignedTurn, ClusterSplit, SpeakersMapping
 
@@ -100,13 +101,32 @@ def apply_splits_to_turns(
     return updated
 
 
-def save_speakers_mapping(mapping: SpeakersMapping, path: Path) -> None:
-    """Save mapping configuration to JSON file or session directory."""
-    target_file = path / "speakers_mapping.json" if path.is_dir() else path
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-    target_file.write_text(
-        json.dumps(mapping.model_dump(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+@overload
+def save_speakers_mapping(mapping: SpeakersMapping, path: Path) -> None: ...
+
+
+@overload
+def save_speakers_mapping(mapping: Path, path: SpeakersMapping) -> None: ...
+
+
+def save_speakers_mapping(
+    mapping: SpeakersMapping | Path,
+    path: Path | SpeakersMapping,
+) -> None:
+    """Save mapping configuration to JSON file or session directory atomically."""
+    if isinstance(mapping, SpeakersMapping):
+        actual_mapping = mapping
+        actual_path = Path(path)  # type: ignore[arg-type]
+    else:
+        actual_mapping = path  # type: ignore[assignment]
+        actual_path = Path(mapping)
+
+    target_file = (
+        actual_path / "speakers_mapping.json" if actual_path.is_dir() else actual_path
+    )
+    atomic_write_text(
+        target_file,
+        json.dumps(actual_mapping.model_dump(), indent=2, ensure_ascii=False),
     )
 
 
@@ -131,8 +151,14 @@ def run_interactive_review(
     min_turns: int = 1,
     min_duration: float = 0.0,
     filter_slice: int | None = None,
+    mapping_path: Path | None = None,
 ) -> SpeakersMapping:
     """Run interactive terminal QCM to attribute speakers."""
+
+    def _persist_progress() -> None:
+        if mapping_path is not None:
+            save_speakers_mapping(mapping, mapping_path)
+
     candidates = list(dict.fromkeys(candidates))
     mapping = (
         existing_mapping.model_copy(deep=True)
@@ -421,6 +447,7 @@ def run_interactive_review(
                             console.print(
                                 f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {opts[slice_choice]}[/green]"
                             )
+                            _persist_progress()
                             break
                         elif slice_choice == "c":
                             c_name = Prompt.ask("Enter custom speaker name").strip()
@@ -432,6 +459,7 @@ def run_interactive_review(
                                 console.print(
                                     f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {c_name}[/green]"
                                 )
+                                _persist_progress()
                             break
                         else:
                             mapping.slice_overrides.setdefault(str(slice_id), {})[
@@ -441,6 +469,7 @@ def run_interactive_review(
                             console.print(
                                 f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {slice_choice}[/green]"
                             )
+                            _persist_progress()
                             break
                 console.print("")
                 break
@@ -448,6 +477,7 @@ def run_interactive_review(
                 mapping.cluster_defaults[cid] = opts[raw_choice]
                 mapping.label_sources[cid] = "manual"
                 console.print(f"[green]✓ Mapped {cid} -> {opts[raw_choice]}[/green]\n")
+                _persist_progress()
                 break
             elif raw_choice == "c":
                 custom_name = Prompt.ask("Enter custom speaker name").strip()
@@ -455,11 +485,13 @@ def run_interactive_review(
                     mapping.cluster_defaults[cid] = custom_name
                     mapping.label_sources[cid] = "manual"
                     console.print(f"[green]✓ Mapped {cid} -> {custom_name}[/green]\n")
+                    _persist_progress()
                 break
             else:
                 mapping.cluster_defaults[cid] = raw_choice
                 mapping.label_sources[cid] = "manual"
                 console.print(f"[green]✓ Mapped {cid} -> {raw_choice}[/green]\n")
+                _persist_progress()
                 break
 
     return mapping

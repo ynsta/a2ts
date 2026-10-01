@@ -3,7 +3,10 @@
 import hashlib
 import json
 import logging
+import tempfile
 from pathlib import Path
+
+import numpy as np
 
 from a2ts.models import (
     DiarizationCacheFile,
@@ -18,12 +21,49 @@ logger = logging.getLogger(__name__)
 
 
 def atomic_write_text(path: Path, content: str) -> None:
-    """Write text to target file atomically using a temporary sibling file."""
+    """Write text to target file atomically using a unique temporary sibling file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(path)
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+    ) as tmp_f:
+        tmp_path = Path(tmp_f.name)
+        try:
+            tmp_f.write(content)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+    try:
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_save_numpy(path: Path, arr: np.ndarray) -> None:
+    """Save numpy array to target file atomically using a unique temporary sibling file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp.npy",
+        delete=False,
+    ) as tmp_f:
+        tmp_path = Path(tmp_f.name)
+
+    try:
+        np.save(tmp_path, arr)
+        tmp_path.replace(path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def compute_prompt_hash(prompt: str | None) -> str:

@@ -23,6 +23,7 @@ from rich.progress import (
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
 from a2ts.cache import (
+    atomic_save_numpy,
     atomic_write_text,
     load_diarization_cache,
     save_diarization_cache,
@@ -218,10 +219,7 @@ def save_segment_embeddings(
     idx_file = Path(f"{cache_prefix_path}_segment_indices.json")
     prov_file = Path(f"{cache_prefix_path}_segment_embeddings_provenance.json")
 
-    emb_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_emb = emb_file.with_suffix(".tmp.npy")
-    np.save(tmp_emb, emb_matrix)
-    tmp_emb.replace(emb_file)
+    atomic_save_numpy(emb_file, emb_matrix)
     atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
     prov = EmbeddingCacheProvenance(
         entity_kind="segment",
@@ -353,10 +351,7 @@ def save_turn_embeddings(
     idx_file = Path(f"{cache_prefix_path}_turn_indices.json")
     prov_file = Path(f"{cache_prefix_path}_turn_embeddings_provenance.json")
 
-    emb_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_emb = emb_file.with_suffix(".tmp.npy")
-    np.save(tmp_emb, emb_matrix)
-    tmp_emb.replace(emb_file)
+    atomic_save_numpy(emb_file, emb_matrix)
     atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
     prov = EmbeddingCacheProvenance(
         entity_kind="turn",
@@ -1006,11 +1001,7 @@ compute_voice_profiles_from_turns = compute_voice_profiles
 
 def save_voice_profiles(db: VoiceProfilesDatabase, path: Path) -> None:
     """Save voice profiles database to JSON atomically."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(db.model_dump_json(indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    atomic_write_text(Path(path), db.model_dump_json(indent=2))
 
 
 def load_voice_profiles(path: Path) -> VoiceProfilesDatabase | None:

@@ -1,6 +1,13 @@
+import concurrent.futures
+import os
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 from a2ts.cache import (
+    atomic_save_numpy,
+    atomic_write_text,
     compute_prompt_hash,
     load_diarization_cache,
     load_transcript_cache,
@@ -158,3 +165,76 @@ def test_diarization_cache_invalidation_and_force(tmp_path: Path) -> None:
 
     # Force bypass
     assert load_diarization_cache(cache_path, prov, force=True) is None
+
+
+def test_atomic_write_text_concurrent(tmp_path: Path) -> None:
+    target_file = tmp_path / "concurrent.txt"
+    num_threads = 10
+    num_writes = 30
+    payloads = [f"thread-payload-{i}\n" for i in range(num_writes)]
+
+    def write_payload(payload: str) -> None:
+        atomic_write_text(target_file, payload)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(write_payload, p) for p in payloads]
+        for f in concurrent.futures.as_completed(futures):
+            # Verify no exceptions (e.g. FileNotFoundError on rename) were raised
+            f.result()
+
+    assert target_file.is_file()
+    final_content = target_file.read_text(encoding="utf-8")
+    assert final_content in payloads
+    # Ensure no leftover temporary files in directory
+    assert list(tmp_path.glob(".*.tmp*")) == []
+
+
+def test_atomic_write_text_cleanup_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_file = tmp_path / "error_test.txt"
+
+    def fail_replace(
+        _src: os.PathLike[str] | str, _dst: os.PathLike[str] | str
+    ) -> None:
+        raise OSError("Simulated disk error during replace")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="Simulated disk error"):
+        atomic_write_text(target_file, "should not persist")
+
+    assert not target_file.exists()
+    assert list(tmp_path.glob(".*.tmp*")) == []
+
+
+def test_atomic_save_numpy(tmp_path: Path) -> None:
+    target_file = tmp_path / "embeddings.npy"
+    data = np.array([[1.0, 2.5, -3.2], [0.5, 4.0, 1.2]], dtype=np.float32)
+
+    atomic_save_numpy(target_file, data)
+
+    assert target_file.is_file()
+    loaded = np.load(target_file)
+    np.testing.assert_array_equal(loaded, data)
+    assert list(tmp_path.glob(".*.tmp*")) == []
+
+
+def test_atomic_save_numpy_cleanup_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_file = tmp_path / "embeddings_error.npy"
+    data = np.ones((3, 3), dtype=np.float32)
+
+    def fail_replace(
+        _src: os.PathLike[str] | str, _dst: os.PathLike[str] | str
+    ) -> None:
+        raise OSError("Simulated disk error during replace")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="Simulated disk error"):
+        atomic_save_numpy(target_file, data)
+
+    assert not target_file.exists()
+    assert list(tmp_path.glob(".*.tmp*")) == []

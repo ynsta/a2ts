@@ -540,6 +540,7 @@ def run(
             min_turns=review_min_turns,
             min_duration=review_min_duration,
             filter_slice=review_time_slice,
+            mapping_path=mapping_path,
         )
         for cid, val in mapping.cluster_defaults.items():
             if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
@@ -647,9 +648,9 @@ def run(
         created_at=datetime.now(UTC).isoformat(),
         output_path=str(output),
     )
-    (session_dir / "session.json").write_text(
+    atomic_write_text(
+        session_dir / "session.json",
         json.dumps(session_meta.model_dump(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
     )
 
     console.print(
@@ -870,6 +871,7 @@ def review(
         min_turns=min_turns,
         min_duration=min_duration,
         filter_slice=time_slice,
+        mapping_path=mapping_path,
     )
     for cid, val in mapping.cluster_defaults.items():
         if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
@@ -920,8 +922,7 @@ def review(
     debounced_turns = debounce_consecutive_turns(aligned_turns)
     raw_md = render_markdown_transcript(debounced_turns)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(raw_md, encoding="utf-8")
+    atomic_write_text(output, raw_md)
     console.print(
         f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {output}\n"
     )
@@ -955,11 +956,11 @@ def split(
     save_speakers_mapping(mapping, mapping_path)
 
     updated_turns = apply_splits_to_turns(turns, mapping.splits)
-    turns_path.write_text(
+    atomic_write_text(
+        turns_path,
         json.dumps(
             [t.model_dump() for t in updated_turns], indent=2, ensure_ascii=False
         ),
-        encoding="utf-8",
     )
 
     mapped_turns = apply_speakers_mapping(updated_turns, mapping)
@@ -978,8 +979,7 @@ def split(
     if out_path is None:
         out_path = Path("transcript.md")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(raw_md, encoding="utf-8")
+    atomic_write_text(out_path, raw_md)
     console.print(
         f"\n[bold green]✓ Cluster '{cluster_id}' split at {at}s to '{to}'. Transcript saved to:[/bold green] {out_path}\n"
     )
@@ -1177,17 +1177,17 @@ def recluster(
         aligned_turns = apply_splits_to_turns(aligned_turns, mapping.splits)
 
     turns_path = session_dir / "turns.json"
-    turns_path.write_text(
+    atomic_write_text(
+        turns_path,
         json.dumps(
             [t.model_dump() for t in aligned_turns], indent=2, ensure_ascii=False
         ),
-        encoding="utf-8",
     )
 
     diar_cache = diarization_dir / f"{media_hash}.json"
-    diar_cache.write_text(
+    atomic_write_text(
+        diar_cache,
         json.dumps([t.model_dump() for t in speaker_turns], indent=2),
-        encoding="utf-8",
     )
 
     if voice_profiles.is_file():
@@ -1231,8 +1231,7 @@ def recluster(
         else:
             out_path = Path("transcript.md")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(raw_md, encoding="utf-8")
+    atomic_write_text(out_path, raw_md)
 
     console.print(
         f"[bold green]✓ Re-clustered into {num_detected} speakers in {elapsed_str}. Saved to {out_path}.[/bold green]"
