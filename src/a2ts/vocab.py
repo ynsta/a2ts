@@ -12,15 +12,32 @@ from a2ts.models import EntityRecord
 
 logger = logging.getLogger(__name__)
 
-CONTROL_TOKEN_PATTERN = re.compile(r"<\|.*?\|>")
+CONTROL_TOKEN_PATTERN = re.compile(r"<\|(?:(?!<\|).)*?\|>")
 WIKILINK_PATTERN = re.compile(r"\[\[([^|\]]+)(?:\|([^\]]+))?\]\]")
 ALIAS_BLOCK_PATTERN = re.compile(r"(?m)^aliases:\s*\n((?:\s*-\s*.+\n)+)")
 HEADING_PATTERN = re.compile(r"(?m)^##\s+([^\n#]+)")
 
 
+def strip_control_tokens(text: str) -> str:
+    """Iteratively strip Whisper/GPT control tokens (<|.*?|>) and dangling delimiters."""
+    prev = text
+    while True:
+        cleaned = CONTROL_TOKEN_PATTERN.sub("", prev)
+        if cleaned == prev:
+            break
+        prev = cleaned
+    # Also strip any dangling delimiter fragments
+    while True:
+        dangling_cleaned = cleaned.replace("<|", "").replace("|>", "").replace("<>", "")
+        if dangling_cleaned == cleaned:
+            break
+        cleaned = dangling_cleaned
+    return cleaned
+
+
 def clean_entity_name(name: str) -> str:
     """Sanitize entity name by stripping Whisper/GPT control tokens (<|.*?|>) and normalizing whitespace."""
-    cleaned = CONTROL_TOKEN_PATTERN.sub("", name)
+    cleaned = strip_control_tokens(name)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -144,7 +161,7 @@ def count_tokens(text: str, tokenizer: Any = None) -> int:
 def extract_candidates_from_markdown(content: str, filename: str) -> list[EntityRecord]:
     """Parse wikilinks, frontmatter aliases, and headings from markdown text."""
     records: list[EntityRecord] = []
-    content = CONTROL_TOKEN_PATTERN.sub("", content)
+    content = strip_control_tokens(content)
 
     for match in WIKILINK_PATTERN.finditer(content):
         target = match.group(1).strip()

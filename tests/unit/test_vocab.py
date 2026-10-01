@@ -16,6 +16,7 @@ from a2ts.vocab import (
     load_speaker_names,
     load_wordlist_file,
     scan_context_directory,
+    strip_control_tokens,
 )
 
 
@@ -165,6 +166,21 @@ def test_load_speaker_names(tmp_path: Path) -> None:
     ]
 
 
+def test_strip_control_tokens_nested() -> None:
+    """strip_control_tokens iteratively removes nested tokens and dangling delimiters."""
+    assert strip_control_tokens("<<|endoftext|>|endoftext|>") == ""
+    assert strip_control_tokens("<<<|startoftranscript|>|>") == ""
+    assert strip_control_tokens("<|<|startoftranscript|>|>") == ""
+    assert strip_control_tokens("prefix<|<|foo|>|>suffix") == "prefixsuffix"
+    assert strip_control_tokens("orphan<|") == "orphan"
+    assert strip_control_tokens("|>tokens") == "tokens"
+    assert strip_control_tokens("orphan<||>tokens") == "orphantokens"
+    assert strip_control_tokens("orphan<|tokens|>") == "orphan"
+    assert strip_control_tokens("dangling<|left") == "danglingleft"
+    assert strip_control_tokens("dangling|>right") == "danglingright"
+    assert strip_control_tokens("<|nested<|deep|>token|>") == ""
+
+
 def test_clean_entity_name() -> None:
     """clean_entity_name must strip Whisper/GPT control tokens and normalize whitespace."""
     assert clean_entity_name("<|endoftext|>") == ""
@@ -172,6 +188,30 @@ def test_clean_entity_name() -> None:
     assert clean_entity_name("  Lord   <|fim_prefix|>  Voldemort  ") == "Lord Voldemort"
     assert clean_entity_name("<|custom_token|>") == ""
     assert clean_entity_name("Simple Name") == "Simple Name"
+    # Nested and dangling control tokens
+    assert clean_entity_name("<<|endoftext|>|endoftext|>") == ""
+    assert clean_entity_name("<<<|startoftranscript|>|>") == ""
+    assert clean_entity_name("<|<|startoftranscript|>|>") == ""
+    assert clean_entity_name("  prefix <|<|foo|>|> suffix  ") == "prefix suffix"
+    assert clean_entity_name("orphan<|") == "orphan"
+    assert clean_entity_name("|>tokens") == "tokens"
+    assert clean_entity_name("orphan<||>tokens") == "orphantokens"
+    assert clean_entity_name("orphan<|tokens|>") == "orphan"
+    assert clean_entity_name("dangling<|name") == "danglingname"
+    assert clean_entity_name("dangling|>name") == "danglingname"
+
+
+def test_special_tokens_nested_biasing_prompt() -> None:
+    """Nested control tokens in candidate entities must be stripped cleanly in prompt construction."""
+    special_entities = [
+        EntityRecord(name="<<|endoftext|>|endoftext|>", kind="character"),
+        EntityRecord(name="prefix<|<|startoftranscript|>|>Garrick", kind="speaker"),
+        EntityRecord(name="<<<|endoftext|>|>", kind="custom"),
+    ]
+    prompt = build_biasing_prompt(special_entities)
+    assert prompt == "prefixGarrick"
+    assert "<|" not in prompt
+    assert "|>" not in prompt
 
 
 def test_special_tokens_handling() -> None:
