@@ -450,7 +450,7 @@ def run(
             turn_embs = load_turn_embeddings(
                 cache_prefix=diarization_dir / file_hash,
                 media_hash=file_hash,
-                expected_count=len(speaker_turns),
+                expected_diarization_provenance_hash=diar_prov_hash,
             )
 
         if (

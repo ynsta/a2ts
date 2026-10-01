@@ -187,13 +187,14 @@ def get_embedding_model(device: str = "cuda") -> Any:
 def compute_entity_fingerprint(
     entities: Sequence[RawSegment | SpeakerTurn | AlignedTurn],
 ) -> str:
-    """Compute deterministic SHA-256 fingerprint from entity IDs and time intervals."""
+    """Compute deterministic SHA-256 fingerprint from entity IDs, time intervals, and text."""
     import hashlib
 
     parts: list[str] = []
     for idx, e in enumerate(entities):
         eid = getattr(e, "turn_id", getattr(e, "id", idx))
-        parts.append(f"{eid}:{e.start:.3f}:{e.end:.3f}")
+        text = getattr(e, "text", "")
+        parts.append(f"{eid}:{e.start:.3f}:{e.end:.3f}:{text}")
     return hashlib.sha256(";".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -217,7 +218,9 @@ def save_segment_embeddings(
     prov_file = Path(f"{cache_prefix_path}_segment_embeddings_provenance.json")
 
     emb_file.parent.mkdir(parents=True, exist_ok=True)
-    np.save(emb_file, emb_matrix)
+    tmp_emb = emb_file.with_suffix(".tmp.npy")
+    np.save(tmp_emb, emb_matrix)
+    tmp_emb.replace(emb_file)
     atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
     prov = EmbeddingCacheProvenance(
         entity_kind="segment",
@@ -235,10 +238,15 @@ def load_segment_embeddings(
     media_hash: str,
     expected_transcript_provenance_hash: str | None = None,
     expected_count: int | None = None,
+    expected_entity_fingerprint: str | None = None,
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+    segments: Sequence[RawSegment] | None = None,
 ) -> tuple[np.ndarray, list[int]] | None:
     """Load cached segment embeddings and indices, strictly validating provenance."""
     cache_prefix_path = Path(cache_prefix)
+    if expected_entity_fingerprint is None and segments is not None:
+        expected_entity_fingerprint = compute_entity_fingerprint(segments)
+
     emb_file = Path(f"{cache_prefix_path}_segment_embeddings.npy")
     idx_file = Path(f"{cache_prefix_path}_segment_indices.json")
     prov_file = Path(f"{cache_prefix_path}_segment_embeddings_provenance.json")
@@ -284,6 +292,16 @@ def load_segment_embeddings(
             "Segment embedding transcript_provenance_hash mismatch: expected '%s', got '%s'",
             expected_transcript_provenance_hash,
             prov.transcript_provenance_hash,
+        )
+        return None
+    if (
+        expected_entity_fingerprint is not None
+        and prov.entity_fingerprint != expected_entity_fingerprint
+    ):
+        logger.debug(
+            "Segment embedding entity_fingerprint mismatch: expected '%s', got '%s'",
+            expected_entity_fingerprint,
+            prov.entity_fingerprint,
         )
         return None
     if expected_count is not None and prov.count != expected_count:
@@ -335,7 +353,9 @@ def save_turn_embeddings(
     prov_file = Path(f"{cache_prefix_path}_turn_embeddings_provenance.json")
 
     emb_file.parent.mkdir(parents=True, exist_ok=True)
-    np.save(emb_file, emb_matrix)
+    tmp_emb = emb_file.with_suffix(".tmp.npy")
+    np.save(tmp_emb, emb_matrix)
+    tmp_emb.replace(emb_file)
     atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
     prov = EmbeddingCacheProvenance(
         entity_kind="turn",
@@ -353,10 +373,15 @@ def load_turn_embeddings(
     media_hash: str,
     expected_diarization_provenance_hash: str | None = None,
     expected_count: int | None = None,
+    expected_entity_fingerprint: str | None = None,
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+    turns: Sequence[SpeakerTurn | AlignedTurn] | None = None,
 ) -> tuple[np.ndarray, list[int]] | None:
     """Load cached turn embeddings and indices, strictly validating provenance."""
     cache_prefix_path = Path(cache_prefix)
+    if expected_entity_fingerprint is None and turns is not None:
+        expected_entity_fingerprint = compute_entity_fingerprint(turns)
+
     emb_file = Path(f"{cache_prefix_path}_turn_embeddings.npy")
     idx_file = Path(f"{cache_prefix_path}_turn_indices.json")
     prov_file = Path(f"{cache_prefix_path}_turn_embeddings_provenance.json")
@@ -402,6 +427,16 @@ def load_turn_embeddings(
             "Turn embedding diarization_provenance_hash mismatch: expected '%s', got '%s'",
             expected_diarization_provenance_hash,
             prov.diarization_provenance_hash,
+        )
+        return None
+    if (
+        expected_entity_fingerprint is not None
+        and prov.entity_fingerprint != expected_entity_fingerprint
+    ):
+        logger.debug(
+            "Turn embedding entity_fingerprint mismatch: expected '%s', got '%s'",
+            expected_entity_fingerprint,
+            prov.entity_fingerprint,
         )
         return None
     if expected_count is not None and prov.count != expected_count:

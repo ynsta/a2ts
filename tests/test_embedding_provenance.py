@@ -762,3 +762,286 @@ def test_cli_recluster_rejects_foreign_segment_embeddings_glob(tmp_path: Path) -
     assert result.exit_code != 0
     # Must indicate embeddings cache not found (did not glob foreign file)
     assert "Embeddings cache not found" in result.output
+
+
+def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> None:
+    """load_turn_embeddings validates expected_entity_fingerprint and turns argument."""
+    from a2ts.diarizer import (
+        compute_entity_fingerprint,
+        load_turn_embeddings,
+        save_turn_embeddings,
+    )
+
+    prefix = tmp_path / "test_fingerprint"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    indices = [0]
+    turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
+
+    save_turn_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=indices,
+        media_hash="fp_media",
+        turns=turns,
+    )
+
+    # Valid fingerprint loads
+    fp = compute_entity_fingerprint(turns)
+    loaded = load_turn_embeddings(
+        prefix,
+        media_hash="fp_media",
+        expected_entity_fingerprint=fp,
+    )
+    assert loaded is not None
+
+    # Passing turns directly computes and validates fingerprint
+    loaded_via_turns = load_turn_embeddings(
+        prefix,
+        media_hash="fp_media",
+        turns=turns,
+    )
+    assert loaded_via_turns is not None
+
+    # Mismatched fingerprint returns None
+    assert (
+        load_turn_embeddings(
+            prefix,
+            media_hash="fp_media",
+            expected_entity_fingerprint="wrong_fingerprint",
+        )
+        is None
+    )
+
+    # Modified turns returns None
+    modified_turns = [SpeakerTurn(id=0, start=0.0, end=3.0, cluster_id="SPEAKER_00")]
+    assert (
+        load_turn_embeddings(
+            prefix,
+            media_hash="fp_media",
+            turns=modified_turns,
+        )
+        is None
+    )
+
+
+def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) -> None:
+    """load_segment_embeddings validates expected_entity_fingerprint and segments argument."""
+    from a2ts.diarizer import (
+        compute_entity_fingerprint,
+        load_segment_embeddings,
+        save_segment_embeddings,
+    )
+
+    prefix = tmp_path / "test_seg_fp"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    indices = [0]
+    segs = [RawSegment(id=0, start=0.0, end=2.0, text="hello")]
+
+    save_segment_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=indices,
+        media_hash="seg_fp_media",
+        segments=segs,
+    )
+
+    fp = compute_entity_fingerprint(segs)
+    loaded = load_segment_embeddings(
+        prefix,
+        media_hash="seg_fp_media",
+        expected_entity_fingerprint=fp,
+    )
+    assert loaded is not None
+
+    # Passing segments directly
+    loaded_via_segs = load_segment_embeddings(
+        prefix,
+        media_hash="seg_fp_media",
+        segments=segs,
+    )
+    assert loaded_via_segs is not None
+
+    # Mismatched fingerprint returns None
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="seg_fp_media",
+            expected_entity_fingerprint="wrong_fp",
+        )
+        is None
+    )
+
+    # Modified segment returns None
+    modified_segs = [RawSegment(id=0, start=0.0, end=2.0, text="changed text")]
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="seg_fp_media",
+            segments=modified_segs,
+        )
+        is None
+    )
+
+
+def test_save_embeddings_atomic_tmp_replace(tmp_path: Path) -> None:
+    """save_segment_embeddings and save_turn_embeddings atomically replace sibling .tmp.npy."""
+    from unittest.mock import patch
+
+    from a2ts.diarizer import save_segment_embeddings, save_turn_embeddings
+
+    prefix = tmp_path / "atomic_test"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+
+    original_replace = Path.replace
+    replaced_sources: list[str] = []
+
+    def mock_replace(self: Path, target: Path | str) -> Path:
+        replaced_sources.append(str(self))
+        return original_replace(self, target)
+
+    with patch.object(Path, "replace", autospec=True, side_effect=mock_replace):
+        save_segment_embeddings(
+            prefix,
+            emb_matrix=mat,
+            valid_indices=[0],
+            media_hash="atomic_m",
+        )
+        assert any(s.endswith(".tmp.npy") for s in replaced_sources)
+        replaced_sources.clear()
+
+        save_turn_embeddings(
+            prefix,
+            emb_matrix=mat,
+            valid_indices=[0],
+            media_hash="atomic_m",
+        )
+        assert any(s.endswith(".tmp.npy") for s in replaced_sources)
+
+
+def test_turn_embeddings_with_short_turns_cache_hit(tmp_path: Path) -> None:
+    """Turn embeddings with short turns (< 0.15s) load correctly without false count mismatch."""
+    from a2ts.diarizer import load_turn_embeddings, save_turn_embeddings
+
+    prefix = tmp_path / "short_turns_test"
+    # 2 turns total: turn 0 is normal, turn 1 was short (<0.15s) so only turn 0 embedded
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.0, end=2.05, cluster_id="SPEAKER_01"),
+    ]
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    valid_indices = [0]  # Only 1 valid index out of 2 turns
+
+    save_turn_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=valid_indices,
+        media_hash="m_short",
+        diarization_provenance_hash="diar_short_hash",
+        turns=turns,
+    )
+
+    # When expected_count is NOT passed (as in run without expected_count=len(speaker_turns)),
+    # load_turn_embeddings successfully loads despite prov.count (1) != len(turns) (2)
+    loaded = load_turn_embeddings(
+        prefix,
+        media_hash="m_short",
+        expected_diarization_provenance_hash="diar_short_hash",
+    )
+    assert loaded is not None
+    loaded_mat, loaded_indices = loaded
+    assert len(loaded_mat) == 1
+    assert loaded_indices == [0]
+
+
+def test_cli_run_invalidates_turn_embeddings_on_diarization_change(
+    tmp_path: Path,
+) -> None:
+    """CLI run invalidates cached turn embeddings when diarization provenance changes."""
+    from unittest.mock import MagicMock, patch
+
+    from typer.testing import CliRunner
+
+    from a2ts.cli import app
+    from a2ts.models import (
+        EmbeddingCacheProvenance,
+        RawSegment,
+        SpeakersMapping,
+        SpeakerTurn,
+        VoiceProfile,
+        VoiceProfilesDatabase,
+    )
+
+    runner = CliRunner()
+    media_file = tmp_path / "session.mp3"
+    media_file.touch()
+    cache_dir = tmp_path / ".a2ts"
+    diar_dir = cache_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+
+    centroid = [0.0] * 192
+    centroid[0] = 1.0
+    profiles_db = VoiceProfilesDatabase(
+        speakers={
+            "Alice": VoiceProfile(
+                speaker_name="Alice", centroid=centroid, sample_count=5
+            )
+        }
+    )
+    profiles_path = tmp_path / "voice_profiles.json"
+    profiles_path.write_text(profiles_db.model_dump_json(), encoding="utf-8")
+
+    emb = np.zeros((1, 192), dtype=np.float32)
+    emb[0, 0] = 1.0
+    np.save(diar_dir / "hash123_turn_embeddings.npy", emb)
+    (diar_dir / "hash123_turn_indices.json").write_text("[0]", encoding="utf-8")
+    # Provenance with old/different diarization provenance hash
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash="hash123",
+        count=1,
+        diarization_provenance_hash="stale_diarization_hash",
+    )
+    (diar_dir / "hash123_turn_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
+
+    audio_wav = tmp_path / "audio.wav"
+    audio_wav.touch()
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="hash123"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=audio_wav),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.diarize_segments") as mock_diarize,
+        patch("a2ts.cli.extract_embeddings_for_turns") as mock_extract_turns,
+        patch("a2ts.cli.run_interactive_review", return_value=SpeakersMapping()),
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Alice speaking", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+        mock_diarize.return_value = [
+            SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+        ]
+        mock_extract_turns.return_value = (emb, [0])
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--output",
+                str(tmp_path / "out.md"),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(profiles_path),
+                "--no-refine",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Because cached diarization_provenance_hash is stale, extract_embeddings_for_turns MUST be called
+        mock_extract_turns.assert_called_once()

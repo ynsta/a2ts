@@ -504,7 +504,13 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
     """Test run pre-matches clusters when voice profiles database and cached embeddings exist."""
     import numpy as np
 
-    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+    from a2ts.cache import compute_transcript_provenance_hash
+    from a2ts.models import (
+        DiarizationCacheProvenance,
+        TranscriptCacheProvenance,
+        VoiceProfile,
+        VoiceProfilesDatabase,
+    )
 
     media_file = tmp_path / "session.mp3"
     media_file.touch()
@@ -528,10 +534,36 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
     emb[0, 0] = 1.0
     np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
     (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
+    trans_prov = TranscriptCacheProvenance(
+        media_hash="abc1234",
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
+    import torch
+
+    is_cuda = torch.cuda.is_available()
+    resolved_engine = "nemotron" if is_cuda else "ecapa"
+    thash = (
+        compute_transcript_provenance_hash(trans_prov)
+        if resolved_engine == "ecapa"
+        else None
+    )
+    diar_prov = DiarizationCacheProvenance(
+        media_hash="abc1234",
+        engine="auto",
+        resolved_engine=resolved_engine,
+        cluster_threshold=0.60,
+        num_speakers=None,
+        device="cuda",
+        transcript_provenance_hash=thash,
+    )
     prov = EmbeddingCacheProvenance(
         entity_kind="turn",
         media_hash="abc1234",
         count=1,
+        diarization_provenance_hash=diar_prov.compute_hash(),
     )
     (diar_dir / "abc1234_turn_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
