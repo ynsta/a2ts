@@ -8,6 +8,16 @@ authors = [
     { name = "Stany MARCEL", email = "stanypub@gmail.com" }
 ]
 requires-python = ">=3.13"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+keywords = ["transcription", "whisper", "voxtral", "diarization", "speech-to-text", "rpg"]
 dependencies = [
     "faster-whisper>=1.1.1",
     "pydantic>=2.10.0",
@@ -26,12 +36,16 @@ dependencies = [
 
 [project.optional-dependencies]
 voxtral = [
-    "transformers>=4.54.0",
-    "torch>=2.5.0",
+    "torch>=2.2.0",
     "accelerate>=1.0.0",
     "bitsandbytes>=0.45.0",
     "mistral-common[audio]>=1.8.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/stany/a2ts"
+Repository = "https://github.com/stany/a2ts"
+Issues = "https://github.com/stany/a2ts/issues"
 
 [project.scripts]
 a2ts = "a2ts.cli:app"

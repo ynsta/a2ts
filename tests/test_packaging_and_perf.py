@@ -91,6 +91,44 @@ def test_pyproject_dependencies_clean() -> None:
     )
 
 
+def test_pyproject_metadata_and_voxtral_dependencies() -> None:
+    """Verify pyproject.toml classifiers, keywords, urls, and voxtral optional dependencies."""
+    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+    assert pyproject_path.is_file(), "pyproject.toml not found"
+
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+
+    project = data.get("project", {})
+
+    # 1. Classifiers present
+    classifiers = project.get("classifiers", [])
+    assert len(classifiers) > 0, "classifiers must not be empty"
+    assert "Programming Language :: Python :: 3.13" in classifiers
+
+    # 2. Keywords present
+    keywords = project.get("keywords", [])
+    assert len(keywords) > 0, "keywords must not be empty"
+    assert "whisper" in keywords
+    assert "transcription" in keywords
+
+    # 3. URLs present
+    urls = project.get("urls", {})
+    assert "Homepage" in urls
+    assert "Repository" in urls
+    assert "Issues" in urls
+
+    # 4. Voxtral optional dependencies: torch>=2.2.0 and no redundant transformers
+    opt_deps = project.get("optional-dependencies", {})
+    voxtral_deps = opt_deps.get("voxtral", [])
+    assert any("torch>=2.2.0" in d for d in voxtral_deps), (
+        f"voxtral must declare torch>=2.2.0: {voxtral_deps}"
+    )
+    assert not any("transformers" in d for d in voxtral_deps), (
+        f"voxtral must not redundantly declare transformers: {voxtral_deps}"
+    )
+
+
 # ============================================================================
 # 2. Craig Track VAD, Language & Prompt
 # ============================================================================
