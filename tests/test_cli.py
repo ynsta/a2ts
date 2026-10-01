@@ -2027,3 +2027,198 @@ def test_recluster_cache_identity_and_run_hit(tmp_path: Path) -> None:
     mock_extract_segs.assert_not_called()
     mock_nemotron.assert_not_called()
     assert "Loading cached diarization" in result_run.output
+
+
+@patch(
+    "a2ts.cli.extract_audio_to_wav",
+    side_effect=RuntimeError("ffmpeg missing or corrupt media"),
+)
+def test_extract_audio_runtime_error_handled(
+    mock_extract: MagicMock, tmp_path: Path
+) -> None:
+    """extract-audio cleanly handles RuntimeError from extract_audio_to_wav."""
+    media_file = tmp_path / "broken.mp4"
+    media_file.touch()
+
+    result = runner.invoke(app, ["extract-audio", str(media_file)])
+    assert result.exit_code == 1
+    assert "ffmpeg missing or corrupt media" in result.output
+
+
+@patch("a2ts.cli.compute_file_hash", return_value="hash_err")
+@patch(
+    "a2ts.cli.extract_audio_to_wav",
+    side_effect=RuntimeError("ffmpeg missing or corrupt media"),
+)
+def test_run_audio_extraction_runtime_error_handled(
+    mock_extract: MagicMock, mock_hash: MagicMock, tmp_path: Path
+) -> None:
+    """run command cleanly handles RuntimeError from extract_audio_to_wav."""
+    media_file = tmp_path / "broken.mp4"
+    media_file.touch()
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            str(media_file),
+            "--cache-dir",
+            str(tmp_path / ".a2ts"),
+            "--output",
+            str(tmp_path / "out.md"),
+            "--no-refine",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "ffmpeg missing or corrupt media" in result.output
+
+
+def test_run_skips_transcript_cache_when_truncated(tmp_path: Path) -> None:
+    """run command skips saving transcript cache when any segment is truncated."""
+    media_file = tmp_path / "session.mp4"
+    media_file.write_bytes(b"dummy audio")
+    cache_dir = tmp_path / ".a2ts"
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="hash_trunc"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.create_transcriber") as mock_create,
+        patch("a2ts.cli.diarize_segments", return_value=[]),
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=1.0, text="cut off text", is_truncated=True)
+        ]
+        mock_create.return_value = mock_transcriber
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--engine",
+                "voxtral",
+                "--cache-dir",
+                str(cache_dir),
+                "--output",
+                str(tmp_path / "out.md"),
+                "--no-diarize",
+                "--no-refine",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert (
+            "Warning: Output was truncated; skipping persistent transcript cache"
+            in result.output
+        )
+        transcripts_cache_files = list((cache_dir / "transcripts").glob("*.json"))
+        assert len(transcripts_cache_files) == 0
+
+
+def test_run_profile_match_escapes_bracketed_names(tmp_path: Path) -> None:
+    """Profile match prints with bracketed speaker names do not raise MarkupError."""
+    import numpy as np
+    import torch
+
+    from a2ts.cache import compute_transcript_provenance_hash
+    from a2ts.diarizer import compute_entity_fingerprint
+    from a2ts.models import (
+        DiarizationCacheProvenance,
+        TranscriptCacheProvenance,
+        VoiceProfile,
+        VoiceProfilesDatabase,
+    )
+
+    media_file = tmp_path / "session.mp3"
+    media_file.touch()
+    cache_dir = tmp_path / ".a2ts"
+    diar_dir = cache_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+
+    centroid = [0.0] * 192
+    centroid[0] = 1.0
+    profiles_db = VoiceProfilesDatabase(
+        speakers={
+            "[DM] Bob": VoiceProfile(
+                speaker_name="[DM] Bob", centroid=centroid, sample_count=5
+            )
+        }
+    )
+    profiles_path = tmp_path / "voice_profiles.json"
+    profiles_path.write_text(profiles_db.model_dump_json(), encoding="utf-8")
+
+    emb = np.zeros((1, 192), dtype=np.float32)
+    emb[0, 0] = 1.0
+    np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
+    (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash="abc1234",
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
+    is_cuda = torch.cuda.is_available()
+    resolved_engine = "nemotron" if is_cuda else "ecapa"
+    thash = compute_transcript_provenance_hash(trans_prov)
+    diar_prov = DiarizationCacheProvenance(
+        media_hash="abc1234",
+        engine="auto",
+        resolved_engine=resolved_engine,
+        cluster_threshold=0.60,
+        num_speakers=None,
+        device="cuda",
+        transcript_provenance_hash=thash,
+    )
+    spk_turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash="abc1234",
+        count=1,
+        diarization_provenance_hash=diar_prov.compute_hash(),
+        entity_fingerprint=compute_entity_fingerprint(spk_turns),
+    )
+    (diar_dir / "abc1234_turn_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="abc1234"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.diarize_segments", return_value=spk_turns),
+        patch(
+            "a2ts.cli.run_interactive_review",
+            side_effect=lambda turns, candidates, existing_mapping=None, **kw: (
+                existing_mapping or SpeakersMapping()
+            ),
+        ),
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Speaking", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--output",
+                str(tmp_path / "out.md"),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(profiles_path),
+                "--interactive",
+                "--no-refine",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Matched voice profile for SPEAKER_00: [DM] Bob" in result.output

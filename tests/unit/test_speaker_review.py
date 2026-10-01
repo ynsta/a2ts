@@ -677,9 +677,9 @@ def test_load_speakers_mapping_corrupt_json(tmp_path: Path) -> None:
 
     mapping = load_speakers_mapping(corrupt_file)
     assert mapping == SpeakersMapping()
-    backup_file = tmp_path / "speakers_mapping.corrupt.json"
-    assert backup_file.is_file()
-    assert backup_file.read_text(encoding="utf-8") == "{this is not valid json"
+    backups = list(tmp_path.glob("speakers_mapping.corrupt.*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{this is not valid json"
 
 
 def test_load_speakers_mapping_schema_error(tmp_path: Path) -> None:
@@ -690,6 +690,38 @@ def test_load_speakers_mapping_schema_error(tmp_path: Path) -> None:
 
     mapping = load_speakers_mapping(schema_err_file)
     assert mapping == SpeakersMapping()
-    backup_file = tmp_path / "speakers_mapping.corrupt.json"
-    assert backup_file.is_file()
-    assert "invalid_string_not_dict" in backup_file.read_text(encoding="utf-8")
+    backups = list(tmp_path.glob("speakers_mapping.corrupt.*.json"))
+    assert len(backups) == 1
+    assert "invalid_string_not_dict" in backups[0].read_text(encoding="utf-8")
+
+
+def test_load_speakers_mapping_non_utf8_bytes(tmp_path: Path) -> None:
+    corrupt_file = tmp_path / "speakers_mapping.json"
+    corrupt_file.write_bytes(b"\x80\x81\xff")
+
+    mapping = load_speakers_mapping(corrupt_file)
+    assert mapping == SpeakersMapping()
+    backups = list(tmp_path.glob("speakers_mapping.corrupt.*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"\x80\x81\xff"
+
+
+def test_load_speakers_mapping_consecutive_corrupt(tmp_path: Path) -> None:
+    corrupt_file = tmp_path / "speakers_mapping.json"
+    corrupt_file.write_text("{corrupt 1", encoding="utf-8")
+
+    with patch("time.time", return_value=1000.0):
+        mapping1 = load_speakers_mapping(corrupt_file)
+    assert mapping1 == SpeakersMapping()
+
+    corrupt_file.write_text("{corrupt 2", encoding="utf-8")
+    with patch("time.time", return_value=2000.0):
+        mapping2 = load_speakers_mapping(corrupt_file)
+    assert mapping2 == SpeakersMapping()
+
+    backups = sorted(tmp_path.glob("speakers_mapping.corrupt.*.json"))
+    assert len(backups) == 2
+    assert backups[0].name == "speakers_mapping.corrupt.1000.json"
+    assert backups[0].read_text(encoding="utf-8") == "{corrupt 1"
+    assert backups[1].name == "speakers_mapping.corrupt.2000.json"
+    assert backups[1].read_text(encoding="utf-8") == "{corrupt 2"

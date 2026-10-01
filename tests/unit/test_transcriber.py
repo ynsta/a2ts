@@ -246,6 +246,7 @@ def test_voxtral_engine_truncation_warning(caplog: pytest.LogCaptureFixture) -> 
 
     assert len(results) == 1
     assert "truncated" in caplog.text.lower() or "max_new_tokens" in caplog.text.lower()
+    assert results[0].is_truncated is True
 
 
 def test_voxtral_engine_long_audio_warning(caplog: pytest.LogCaptureFixture) -> None:

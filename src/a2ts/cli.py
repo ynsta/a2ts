@@ -11,6 +11,7 @@ from typing import Annotated, Any
 import numpy as np
 import typer
 from rich.console import Console
+from rich.markup import escape
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
 from a2ts import __version__
@@ -234,7 +235,11 @@ def extract_audio(
     ] = Path(".a2ts/audio_cache"),
 ) -> None:
     """Extract and resample audio from video/audio to 16kHz mono WAV."""
-    wav_path = extract_audio_to_wav(media_file, output_dir)
+    try:
+        wav_path = extract_audio_to_wav(media_file, output_dir)
+    except RuntimeError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(code=1)
     console.print(f"[green]Audio extracted:[/green] {wav_path}")
 
 
@@ -431,8 +436,12 @@ def run(
     console.print("[bold]Step 1: Extracting audio stream...[/bold]")
     file_hash = compute_file_hash(media_file)
     session_dir = cache_dir / "sessions" / file_hash
+    try:
+        audio_path = extract_audio_to_wav(media_file, cache_dir / "audio_cache")
+    except RuntimeError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(code=1)
     session_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = extract_audio_to_wav(media_file, cache_dir / "audio_cache")
 
     # 2. Mine lore & vocabulary
     console.print("[bold]Step 2: Mining lore context...[/bold]")
@@ -474,7 +483,12 @@ def run(
             compute_type=compute_type,
         )
         raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
-        save_transcript_cache(transcript_cache, trans_prov, raw_segments)
+        if any(getattr(seg, "is_truncated", False) for seg in raw_segments):
+            console.print(
+                "[yellow]Warning: Output was truncated; skipping persistent transcript cache to prevent replaying incomplete transcript.[/yellow]"
+            )
+        else:
+            save_transcript_cache(transcript_cache, trans_prov, raw_segments)
 
     # 4. Acoustic Diarization & Temporal slicing
     console.print("[bold]Step 4: Acoustic speaker diarization & alignment...[/bold]")
@@ -612,8 +626,9 @@ def run(
                             mapping.cluster_defaults[cid] = best_spk
                             mapping.label_sources[cid] = "profile_match"
                             console.print(
-                                f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
+                                f"[cyan]Matched voice profile for {escape(cid)}: {escape(best_spk)} (similarity={score:.2f})[/cyan]"
                             )
+
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
                     f"[yellow]Warning: Voice profile matching skipped: {exc}[/yellow]"
@@ -949,8 +964,9 @@ def review(
                         mapping.cluster_defaults[cid] = best_spk
                         mapping.label_sources[cid] = "profile_match"
                         console.print(
-                            f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
+                            f"[cyan]Matched voice profile for {escape(cid)}: {escape(best_spk)} (similarity={score:.2f})[/cyan]"
                         )
+
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
                     f"[yellow]Warning: Voice profile matching skipped in review: {exc}[/yellow]"
@@ -1404,7 +1420,7 @@ def recluster(
                     mapping.cluster_defaults[cid] = best_spk
                     mapping.label_sources[cid] = "profile_match"
                     console.print(
-                        f"[cyan]Matched voice profile for {cid}: {best_spk} (similarity={score:.2f})[/cyan]"
+                        f"[cyan]Matched voice profile for {escape(cid)}: {escape(best_spk)} (similarity={score:.2f})[/cyan]"
                     )
 
     if closed_set:

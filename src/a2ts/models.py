@@ -23,6 +23,7 @@ class RawSegment(BaseModel):
     end: float
     text: str
     words: list[WordTimestamp] = Field(default_factory=list)
+    is_truncated: bool = False
 
 
 class SpeakerTurn(BaseModel):

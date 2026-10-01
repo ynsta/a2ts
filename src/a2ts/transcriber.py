@@ -324,7 +324,9 @@ class VoxtralEngine:
         )
         text = decoded[0].strip() if decoded else ""
 
-        return [RawSegment(id=0, start=0.0, end=0.0, text=text)]
+        return [
+            RawSegment(id=0, start=0.0, end=0.0, text=text, is_truncated=is_truncated)
+        ]
 
 
 def get_engine(engine_type: str, **kwargs: Any) -> TranscriberEngine:
