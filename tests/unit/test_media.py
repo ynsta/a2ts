@@ -7,7 +7,9 @@ import pytest
 
 from a2ts.media import (
     compute_file_hash,
+    convert_to_wav,
     extract_audio_to_wav,
+    get_media_duration,
     play_audio_clip,
     play_audio_clip_async,
     probe_media,
@@ -211,3 +213,69 @@ def test_stop_audio_playback_already_finished() -> None:
 
 def test_stop_audio_playback_none() -> None:
     stop_audio_playback(None)  # Should not raise
+
+
+@patch("subprocess.run")
+def test_get_media_duration_success(mock_run: MagicMock, tmp_path: Path) -> None:
+    test_file = tmp_path / "test.mkv"
+    test_file.touch()
+    mock_run.return_value = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"format": {"duration": "45.5", "size": "1000"}}),
+    )
+    assert get_media_duration(test_file) == 45.5
+    mock_run.assert_called_once()
+    assert mock_run.call_args.kwargs.get("timeout") == 60
+
+
+@patch("subprocess.run")
+def test_get_media_duration_timeout(mock_run: MagicMock, tmp_path: Path) -> None:
+    test_file = tmp_path / "test.mkv"
+    test_file.touch()
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["ffprobe"], timeout=60)
+    with pytest.raises(RuntimeError) as exc_info:
+        get_media_duration(test_file)
+    assert "Media command timed out after 60s" in str(exc_info.value)
+
+
+@patch("subprocess.run")
+def test_get_media_duration_missing_ffprobe(
+    mock_run: MagicMock, tmp_path: Path
+) -> None:
+    test_file = tmp_path / "test.mkv"
+    test_file.touch()
+    mock_run.side_effect = FileNotFoundError("No such file or directory: 'ffprobe'")
+    with pytest.raises(RuntimeError) as exc_info:
+        get_media_duration(test_file)
+    assert "ffmpeg/ffprobe not found in PATH. Please install ffmpeg." in str(
+        exc_info.value
+    )
+
+
+@patch("subprocess.run")
+def test_convert_to_wav_timeout(mock_run: MagicMock, tmp_path: Path) -> None:
+    input_file = tmp_path / "sample.mp4"
+    input_file.write_bytes(b"dummy mp4")
+    out_dir = tmp_path / "cache"
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=300)
+    with pytest.raises(RuntimeError) as exc_info:
+        convert_to_wav(input_file, out_dir)
+    assert "Media command timed out after 300s" in str(exc_info.value)
+    # verify tmp file cleaned up
+    assert not any(out_dir.glob("*.tmp_*"))
+
+
+@patch("subprocess.run")
+def test_convert_to_wav_missing_ffmpeg(mock_run: MagicMock, tmp_path: Path) -> None:
+    input_file = tmp_path / "sample.mp4"
+    input_file.write_bytes(b"dummy mp4")
+    out_dir = tmp_path / "cache"
+    mock_run.side_effect = FileNotFoundError("No such file or directory: 'ffmpeg'")
+    with pytest.raises(RuntimeError) as exc_info:
+        convert_to_wav(input_file, out_dir)
+    assert "ffmpeg/ffprobe not found in PATH. Please install ffmpeg." in str(
+        exc_info.value
+    )
+    # verify tmp file cleaned up
+    assert not any(out_dir.glob("*.tmp_*"))

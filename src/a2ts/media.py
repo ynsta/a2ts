@@ -33,11 +33,31 @@ def probe_media(media_path: Path) -> dict[str, Any]:
         str(media_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=60
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "ffmpeg/ffprobe not found in PATH. Please install ffmpeg."
+        ) from None
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Media command timed out after {exc.timeout}s: {exc.cmd}"
+        ) from exc
     except subprocess.CalledProcessError as e:
         stderr_msg = e.stderr.strip() if e.stderr else ""
         raise RuntimeError(f"ffmpeg/ffprobe error: {stderr_msg}") from e
     return cast(dict[str, Any], json.loads(proc.stdout))
+
+
+def get_media_duration(media_path: Path) -> float:
+    """Return media duration in seconds via probe_media."""
+    info = probe_media(media_path)
+    format_info = info.get("format", {})
+    duration_str = format_info.get("duration")
+    if duration_str is None:
+        raise RuntimeError(f"Could not determine duration for {media_path}")
+    return float(duration_str)
 
 
 def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
@@ -65,9 +85,21 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
         str(tmp_path),
     ]
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
         if tmp_path.exists():
             os.replace(tmp_path, wav_path)
+    except FileNotFoundError:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise RuntimeError(
+            "ffmpeg/ffprobe not found in PATH. Please install ffmpeg."
+        ) from None
+    except subprocess.TimeoutExpired as exc:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise RuntimeError(
+            f"Media command timed out after {exc.timeout}s: {exc.cmd}"
+        ) from exc
     except subprocess.CalledProcessError as e:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -78,6 +110,11 @@ def extract_audio_to_wav(media_path: Path, output_dir: Path) -> Path:
             tmp_path.unlink()
         raise
     return wav_path
+
+
+def convert_to_wav(media_path: Path, output_dir: Path) -> Path:
+    """Convert/extract media file to 16kHz mono WAV format (cached)."""
+    return extract_audio_to_wav(media_path, output_dir)
 
 
 def play_audio_clip_async(

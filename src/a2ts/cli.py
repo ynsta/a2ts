@@ -66,7 +66,11 @@ from a2ts.timeline import (
     align_words_to_speaker_turns,
     assign_time_slices,
 )
-from a2ts.transcriber import TranscriberEngine, WhisperEngine, get_engine
+from a2ts.transcriber import (
+    WhisperEngine,
+    create_transcriber,
+    get_engine,
+)
 from a2ts.vocab import (
     build_biasing_prompt,
     load_speaker_names,
@@ -98,24 +102,6 @@ def resolve_device_and_compute_type(
         resolved_compute_type = compute_type
 
     return resolved_device, resolved_compute_type
-
-
-def create_transcriber(
-    engine: str = "whisper",
-    model_name: str | None = None,
-    device: str = "auto",
-    compute_type: str = "float16",
-    **kwargs: Any,
-) -> TranscriberEngine:
-    """Create transcriber using configured engine, device, and compute type."""
-    engine_kwargs: dict[str, Any] = {
-        "device": device,
-        "compute_type": compute_type,
-        **kwargs,
-    }
-    if model_name is not None:
-        engine_kwargs["model_name"] = model_name
-    return get_engine(engine, **engine_kwargs)
 
 
 def resolve_session_dir(path: Path) -> Path:
@@ -353,6 +339,13 @@ def run(
     """Execute end-to-end transcription and diarization pipeline."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     device, compute_type = resolve_device_and_compute_type(device, compute_type)
+    if engine.lower().strip() == "voxtral" and diarize:
+        console.print(
+            "[bold yellow]Warning: Voxtral produces untimed segments without word timestamps "
+            "and does not support acoustic diarization. Disabling diarization for Voxtral or run with --no-diarize.[/bold yellow]"
+        )
+        diarize = False
+
     console.print(
         f"\n[bold green]=== Starting a2ts Pipeline for {media_file.name} ===[/bold green]\n"
     )

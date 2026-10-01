@@ -1447,3 +1447,61 @@ def test_run_simulated_cpu_defaults(tmp_path: Path) -> None:
             device="cpu",
             compute_type="int8",
         )
+
+
+def test_run_voxtral_with_diarization_warning_disables_diarization(
+    tmp_path: Path,
+) -> None:
+    """Voxtral engine with --diarize warns and disables diarization."""
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"dummy video data for hash")
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(
+            id=0,
+            start=0.0,
+            end=0.0,
+            text="Voxtral untimed text.",
+            words=[],
+        )
+    ]
+
+    with (
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine", return_value=mock_engine),
+        patch("a2ts.cli.diarize_segments") as mock_diarize,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--engine",
+                "voxtral",
+                "--diarize",
+                "--no-interactive",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result.exit_code == 0
+        normalized_output = " ".join(result.output.split())
+        assert (
+            "Voxtral produces untimed segments without word timestamps and does not support acoustic diarization. Disabling diarization for Voxtral or run with --no-diarize."
+            in normalized_output
+        )
+        mock_diarize.assert_not_called()
+
+
+def test_cli_imports_create_transcriber_from_transcriber() -> None:
+    """Ensure cli.py imports create_transcriber from a2ts.transcriber."""
+    import a2ts.cli
+    import a2ts.transcriber
+
+    assert a2ts.cli.create_transcriber is a2ts.transcriber.create_transcriber

@@ -4,7 +4,7 @@ import ctypes
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from rich.console import Console
 from rich.progress import (
@@ -48,6 +48,7 @@ class TranscriberEngine(Protocol):
         audio_path: Path,
         prompt: str | None = None,
         language: str = "fr",
+        duration: float | None = None,
     ) -> list[RawSegment]:
         """Transcribe an audio file into timestamped RawSegment objects."""
         ...
@@ -89,6 +90,7 @@ class WhisperEngine:
         audio_path: Path,
         prompt: str | None = None,
         language: str = "fr",
+        duration: float | None = None,
     ) -> list[RawSegment]:
         """Transcribe audio using faster-whisper."""
         model = self._get_model()
@@ -106,9 +108,10 @@ class WhisperEngine:
 
         results: list[RawSegment] = []
         raw_duration = getattr(info, "duration", None)
-        duration = (
+        computed_duration = (
             float(raw_duration) if isinstance(raw_duration, (int, float)) else None
         )
+        total_duration = duration if duration is not None else computed_duration
 
         with Progress(
             SpinnerColumn(),
@@ -120,10 +123,14 @@ class WhisperEngine:
             console=console,
             transient=False,
         ) as progress:
-            task = progress.add_task("transcribe", total=duration)
+            task = progress.add_task("transcribe", total=total_duration)
             for i, s in enumerate(segments_gen):
-                if duration and hasattr(s, "end") and isinstance(s.end, (int, float)):
-                    progress.update(task, completed=min(s.end, duration))
+                if (
+                    total_duration
+                    and hasattr(s, "end")
+                    and isinstance(s.end, (int, float))
+                ):
+                    progress.update(task, completed=min(s.end, total_duration))
                 words = [
                     WordTimestamp(
                         word=w.word.strip(),
@@ -160,12 +167,14 @@ class VoxtralEngine:
         load_4bit: bool = True,
         device: str = "auto",
         compute_type: str = "float16",
+        max_new_tokens: int = 1024,
         **kwargs: Any,
     ) -> None:
         self.model_name = model_name
         self.load_4bit = load_4bit
         self.device = device
         self.compute_type = compute_type
+        self.max_new_tokens = max_new_tokens
         self._processor: Any = None
         self._model: Any = None
 
@@ -206,9 +215,27 @@ class VoxtralEngine:
         audio_path: Path,
         prompt: str | None = None,
         language: str = "fr",
+        duration: float | None = None,
     ) -> list[RawSegment]:
         """Transcribe audio using Voxtral model with real-time feedback."""
         import torch
+
+        effective_duration = duration
+        if effective_duration is None:
+            try:
+                from a2ts.media import get_media_duration
+
+                effective_duration = get_media_duration(audio_path)
+            except (RuntimeError, FileNotFoundError, OSError):
+                effective_duration = None
+
+        if effective_duration is not None and effective_duration > 180.0:
+            warning_msg = (
+                "Voxtral is an experimental engine designed for short clips; "
+                "long recordings risk truncation at 1024 tokens"
+            )
+            logger.warning(warning_msg)
+            console.print(f"[bold yellow]Warning: {warning_msg}[/bold yellow]")
 
         processor, model = self._load_model()
 
@@ -247,7 +274,7 @@ class VoxtralEngine:
         except (ImportError, AttributeError, TypeError, ValueError):
             streamer = None
 
-        gen_kwargs: dict[str, Any] = {"max_new_tokens": 1024}
+        gen_kwargs: dict[str, Any] = {"max_new_tokens": self.max_new_tokens}
         if streamer is not None:
             gen_kwargs["streamer"] = streamer
             console.print(
@@ -267,8 +294,32 @@ class VoxtralEngine:
                 outputs = model.generate(**inputs, **gen_kwargs)
             console.print("[green]✓ Voxtral generation complete.[/green]\n")
 
+        generated_ids = outputs[:, inputs.input_ids.shape[1] :]
+        is_truncated = False
+        try:
+            if hasattr(generated_ids, "shape") and len(generated_ids.shape) >= 2:
+                is_truncated = int(generated_ids.shape[1]) >= self.max_new_tokens
+            elif hasattr(generated_ids, "__getitem__"):
+                sub = generated_ids[0]
+                if hasattr(sub, "__len__"):
+                    is_truncated = len(sub) >= self.max_new_tokens
+                elif hasattr(sub, "shape") and len(sub.shape) >= 1:
+                    is_truncated = int(sub.shape[0]) >= self.max_new_tokens
+            elif hasattr(generated_ids, "__len__"):
+                is_truncated = len(generated_ids) >= self.max_new_tokens
+        except (TypeError, IndexError, ValueError):
+            is_truncated = False
+
+        if is_truncated:
+            trunc_warning = (
+                f"Voxtral generation reached max_new_tokens cap ({self.max_new_tokens}); "
+                "transcription output may be truncated."
+            )
+            logger.warning(trunc_warning)
+            console.print(f"[bold red]Warning: {trunc_warning}[/bold red]")
+
         decoded = processor.batch_decode(
-            outputs[:, inputs.input_ids.shape[1] :],
+            generated_ids,
             skip_special_tokens=True,
         )
         text = decoded[0].strip() if decoded else ""
@@ -301,4 +352,10 @@ def create_transcriber(
     }
     if model_name is not None:
         engine_kwargs["model_name"] = model_name
+
+    cli_mod = sys.modules.get("a2ts.cli")
+    if cli_mod is not None and getattr(cli_mod, "get_engine", None) is not get_engine:
+        fn: Any = cli_mod.get_engine
+        return cast(TranscriberEngine, fn(engine, **engine_kwargs))
+
     return get_engine(engine, **engine_kwargs)

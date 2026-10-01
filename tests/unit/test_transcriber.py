@@ -21,6 +21,7 @@ def test_transcriber_engine_protocol_conformance() -> None:
             audio_path: Path,
             prompt: str | None = None,
             language: str = "fr",
+            duration: float | None = None,
         ) -> list[RawSegment]:
             return [RawSegment(id=0, start=0.0, end=1.0, text="Test")]
 
@@ -213,3 +214,63 @@ def test_voxtral_engine_defaults() -> None:
     engine = VoxtralEngine()
     assert engine.device == "auto"
     assert engine.compute_type == "float16"
+
+
+def test_voxtral_engine_truncation_warning(caplog: pytest.LogCaptureFixture) -> None:
+    engine = VoxtralEngine(model_name="dummy/voxtral", max_new_tokens=10)
+
+    mock_processor = MagicMock()
+    mock_model = MagicMock()
+
+    mock_inputs = MagicMock()
+    mock_inputs.input_ids.shape = [1, 5]
+    mock_processor.apply_chat_template.return_value.to.return_value = mock_inputs
+
+    # Simulate generating 10 tokens (reaching max_new_tokens cap)
+    mock_generated = MagicMock()
+    mock_generated.__len__.return_value = 10
+    mock_generated.shape = [1, 10]
+    mock_generated.__getitem__.return_value = [1] * 10
+
+    mock_outputs = MagicMock()
+    # outputs[:, 5:] returns mock_generated
+    mock_outputs.__getitem__.return_value = mock_generated
+    mock_model.generate.return_value = mock_outputs
+    mock_processor.batch_decode.return_value = ["Truncated text..."]
+
+    with (
+        patch.object(engine, "_load_model", return_value=(mock_processor, mock_model)),
+        caplog.at_level("WARNING"),
+    ):
+        results = engine.transcribe(Path("/tmp/audio.wav"), prompt=None)
+
+    assert len(results) == 1
+    assert "truncated" in caplog.text.lower() or "max_new_tokens" in caplog.text.lower()
+
+
+def test_voxtral_engine_long_audio_warning(caplog: pytest.LogCaptureFixture) -> None:
+    engine = VoxtralEngine(model_name="dummy/voxtral")
+
+    mock_processor = MagicMock()
+    mock_model = MagicMock()
+
+    mock_inputs = MagicMock()
+    mock_inputs.input_ids.shape = [1, 5]
+    mock_processor.apply_chat_template.return_value.to.return_value = mock_inputs
+
+    mock_outputs = MagicMock()
+    mock_outputs.__getitem__.return_value = MagicMock(shape=[1, 2])
+    mock_model.generate.return_value = mock_outputs
+    mock_processor.batch_decode.return_value = ["Short text"]
+
+    with (
+        patch.object(engine, "_load_model", return_value=(mock_processor, mock_model)),
+        caplog.at_level("WARNING"),
+    ):
+        results = engine.transcribe(Path("/tmp/audio.wav"), prompt=None, duration=240.0)
+
+    assert len(results) == 1
+    assert (
+        "Voxtral is an experimental engine designed for short clips; long recordings risk truncation at 1024 tokens"
+        in caplog.text
+    )
