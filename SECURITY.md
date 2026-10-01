@@ -51,9 +51,9 @@ Under data privacy regulations including the European Union **General Data Prote
 
 ## 4. Test Fixtures and Synthetic Roster Names
 
-All character names (such as `Brakk`, `Ilvaris`, `Garrick`), speaker tags, and Discord usernames (such as `tessaro`, `merrow1`) appearing across automated tests, documentation, and fixtures are synthetic tabletop roleplaying game (TTRPG) campaign lore and test fixtures.
+All character names, speaker tags, and Discord usernames appearing across automated tests, documentation, and fixtures are synthetic tabletop roleplaying game (TTRPG) campaign lore and test fixtures.
 
-- No Personally Identifiable Information (PII) or real-world personal data is contained in this repository.
-- No proprietary lore, real user account credentials, tokens, or secrets are included in the codebase or git commit history.
+- Test fixtures use invented character names and invented Discord handles. Pattern scans of the git history found no credentials; this is not a guarantee.
+- No Personally Identifiable Information (PII) or real-world personal data is intended to be contained in this repository.
 - Audio test fixtures and synthetic speaker labels exist solely for regression testing, performance benchmarking, and development validation.
 
