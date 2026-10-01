@@ -2,9 +2,12 @@
 
 import inspect
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 from typer.testing import CliRunner
 
 from a2ts.cli import app, extract_vocab, resolve_device_and_compute_type
@@ -698,7 +701,7 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
         media_hash="hash5678",
         count=1,
         diarization_provenance_hash=diar_prov.compute_hash(),
-        entity_fingerprint=compute_entity_fingerprint(turns),
+        entity_fingerprint=compute_entity_fingerprint(diar_cache.turns),
     )
     (diar_dir / "hash5678_turn_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -726,6 +729,243 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
         assert result.exit_code == 0
         mock_compute_vp.assert_called_once()
         mock_save_vp.assert_called_once()
+
+
+def test_run_to_review_voice_profiles_roundtrip(tmp_path: Path) -> None:
+    """Test full roundtrip: run writes session & turn embeddings, review loads embeddings and updates voice profiles."""
+    from a2ts.diarizer import save_diarization_cache, save_turn_embeddings
+    from a2ts.models import DiarizationCacheProvenance, VoiceProfilesDatabase
+
+    media_file = tmp_path / "meeting.mp3"
+    media_file.write_bytes(b"dummy audio content")
+    audio_wav = tmp_path / "audio.wav"
+    audio_wav.write_bytes(b"dummy wav content")
+
+    cache_dir = tmp_path / ".a2ts"
+    profiles_path = tmp_path / "voice_profiles.json"
+    out_file = tmp_path / "transcript.md"
+    review_out_file = tmp_path / "reviewed.md"
+
+    def fake_diarize(
+        cache_path: Path | None = None,
+        provenance: DiarizationCacheProvenance | None = None,
+        **kwargs: Any,
+    ) -> list[SpeakerTurn]:
+        turns = [SpeakerTurn(id=0, start=0.0, end=5.0, cluster_id="SPEAKER_00")]
+        if cache_path and provenance:
+            save_diarization_cache(cache_path, provenance, turns)
+        return turns
+
+    def fake_extract_embeddings(
+        cache_prefix: Path | str | None = None,
+        media_hash: str = "",
+        diarization_provenance_hash: str | None = None,
+        turns: Sequence[SpeakerTurn | AlignedTurn] | None = None,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, list[int]]:
+        emb = np.zeros((1, 192), dtype=np.float32)
+        emb[0, 0] = 1.0
+        valid_indices = [0]
+        if cache_prefix is not None:
+            save_turn_embeddings(
+                cache_prefix=cache_prefix,
+                emb_matrix=emb,
+                valid_indices=valid_indices,
+                media_hash=media_hash,
+                diarization_provenance_hash=diarization_provenance_hash,
+                turns=turns,
+            )
+        return emb, valid_indices
+
+    mock_transcriber = MagicMock()
+    mock_transcriber.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=5.0, text="Hello Alice", words=[])
+    ]
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="hash_roundtrip_123"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=audio_wav),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine", return_value=mock_transcriber),
+        patch("a2ts.cli.diarize_segments", side_effect=fake_diarize),
+        patch(
+            "a2ts.cli.extract_embeddings_for_turns",
+            side_effect=fake_extract_embeddings,
+        ),
+        patch(
+            "a2ts.cli.run_interactive_review",
+            return_value=SpeakersMapping(
+                cluster_defaults={"SPEAKER_00": "Speaker 1"},
+                label_sources={"SPEAKER_00": "manual"},
+            ),
+        ),
+    ):
+        run_res = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(tmp_path / "run_profiles.json"),
+                "--interactive",
+                "--no-refine",
+            ],
+        )
+        assert run_res.exit_code == 0, run_res.output
+
+    session_dir = cache_dir / "sessions" / "hash_roundtrip_123"
+    assert (session_dir / "session.json").is_file()
+    assert (session_dir / "turns.json").is_file()
+    diar_cache_file = cache_dir / "diarization" / "hash_roundtrip_123.json"
+    assert diar_cache_file.is_file()
+    prov_file = (
+        cache_dir / "diarization" / "hash_roundtrip_123_turn_embeddings_provenance.json"
+    )
+    assert prov_file.is_file()
+    assert (
+        cache_dir / "diarization" / "hash_roundtrip_123_turn_embeddings.npy"
+    ).is_file()
+
+    with patch(
+        "a2ts.cli.run_interactive_review",
+        return_value=SpeakersMapping(
+            cluster_defaults={"SPEAKER_00": "Alice"},
+            label_sources={"SPEAKER_00": "manual"},
+        ),
+    ):
+        review_res = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--output",
+                str(review_out_file),
+                "--voice-profiles",
+                str(profiles_path),
+            ],
+        )
+        assert review_res.exit_code == 0, review_res.output
+        assert "Turn embeddings not found" not in review_res.output
+        assert profiles_path.is_file()
+        vp_db = VoiceProfilesDatabase.model_validate_json(
+            profiles_path.read_text(encoding="utf-8")
+        )
+        assert "Alice" in vp_db.speakers
+        assert vp_db.speakers["Alice"].sample_count >= 1
+
+
+def test_run_ecapa_fallback_hash_synchronization(tmp_path: Path) -> None:
+    """Test run synchronizes diarization provenance hash when diarize_segments falls back to ecapa."""
+    from a2ts.diarizer import save_diarization_cache, save_turn_embeddings
+    from a2ts.models import (
+        DiarizationCacheFile,
+        DiarizationCacheProvenance,
+        EmbeddingCacheProvenance,
+    )
+
+    media_file = tmp_path / "meeting.mp3"
+    media_file.write_bytes(b"dummy audio content")
+    audio_wav = tmp_path / "audio.wav"
+    audio_wav.write_bytes(b"dummy wav content")
+
+    cache_dir = tmp_path / ".a2ts"
+    out_file = tmp_path / "transcript.md"
+
+    def fake_diarize_fallback(
+        cache_path: Path | None = None,
+        provenance: DiarizationCacheProvenance | None = None,
+        **kwargs: Any,
+    ) -> list[SpeakerTurn]:
+        turns = [SpeakerTurn(id=0, start=0.0, end=5.0, cluster_id="SPEAKER_00")]
+        if cache_path and provenance:
+            fallback_prov = provenance.model_copy(update={"resolved_engine": "ecapa"})
+            save_diarization_cache(cache_path, fallback_prov, turns)
+        return turns
+
+    def fake_extract_embeddings(
+        cache_prefix: Path | str | None = None,
+        media_hash: str = "",
+        diarization_provenance_hash: str | None = None,
+        turns: Sequence[SpeakerTurn | AlignedTurn] | None = None,
+        **kwargs: Any,
+    ) -> tuple[np.ndarray, list[int]]:
+        emb = np.zeros((1, 192), dtype=np.float32)
+        emb[0, 0] = 1.0
+        valid_indices = [0]
+        if cache_prefix is not None:
+            save_turn_embeddings(
+                cache_prefix=cache_prefix,
+                emb_matrix=emb,
+                valid_indices=valid_indices,
+                media_hash=media_hash,
+                diarization_provenance_hash=diarization_provenance_hash,
+                turns=turns,
+            )
+        return emb, valid_indices
+
+    mock_transcriber = MagicMock()
+    mock_transcriber.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=5.0, text="Hello Alice", words=[])
+    ]
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value="hash_fallback_456"),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=audio_wav),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine", return_value=mock_transcriber),
+        patch("torch.cuda.is_available", return_value=True),
+        patch("a2ts.cli.diarize_segments", side_effect=fake_diarize_fallback),
+        patch(
+            "a2ts.cli.extract_embeddings_for_turns",
+            side_effect=fake_extract_embeddings,
+        ),
+        patch(
+            "a2ts.cli.run_interactive_review",
+            return_value=SpeakersMapping(
+                cluster_defaults={"SPEAKER_00": "Speaker 1"},
+                label_sources={"SPEAKER_00": "manual"},
+            ),
+        ),
+    ):
+        run_res = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(tmp_path / "run_profiles.json"),
+                "--device",
+                "cuda",
+                "--diarizer-engine",
+                "auto",
+                "--interactive",
+                "--no-refine",
+            ],
+        )
+        assert run_res.exit_code == 0, run_res.output
+
+    diar_cache_path = cache_dir / "diarization" / "hash_fallback_456.json"
+    diar_cache = DiarizationCacheFile.model_validate_json(
+        diar_cache_path.read_text(encoding="utf-8")
+    )
+    assert diar_cache.provenance.resolved_engine == "ecapa"
+    expected_hash = diar_cache.provenance.compute_hash()
+
+    prov_file = (
+        cache_dir / "diarization" / "hash_fallback_456_turn_embeddings_provenance.json"
+    )
+    turn_prov = EmbeddingCacheProvenance.model_validate_json(
+        prov_file.read_text(encoding="utf-8")
+    )
+    assert turn_prov.diarization_provenance_hash == expected_hash
 
 
 def test_recluster_command(tmp_path: Path) -> None:

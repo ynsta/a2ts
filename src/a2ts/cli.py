@@ -549,6 +549,16 @@ def run(
             for i, seg in enumerate(raw_segments)
         ]
 
+    if diar_cache.is_file():
+        try:
+            diar_cache_file = DiarizationCacheFile.model_validate_json(
+                diar_cache.read_text(encoding="utf-8")
+            )
+            diar_prov = diar_cache_file.provenance
+            diar_prov_hash = diar_prov.compute_hash()
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
     sliced_turns = assign_time_slices(speaker_turns, slice_minutes=slice_minutes)
     aligned_turns = align_words_to_speaker_turns(raw_segments, sliced_turns)
 
@@ -913,6 +923,7 @@ def review(
     turn_embs: tuple[np.ndarray, list[int]] | None = None
     if media_hash:
         expected_diar_prov_hash: str | None = None
+        diar_cache_file: DiarizationCacheFile | None = None
         diar_cache_path = diarization_dir / f"{media_hash}.json"
         if diar_cache_path.is_file():
             try:
@@ -922,12 +933,16 @@ def review(
                 expected_diar_prov_hash = diar_cache_file.provenance.compute_hash()
             except (OSError, ValueError, json.JSONDecodeError):
                 expected_diar_prov_hash = None
+                diar_cache_file = None
 
+        expected_turns: list[SpeakerTurn] | None = (
+            diar_cache_file.turns if diar_cache_file is not None else None
+        )
         turn_embs = load_turn_embeddings(
             cache_prefix=diarization_dir / media_hash,
             expected_media_hash=media_hash,
             expected_diarization_provenance_hash=expected_diar_prov_hash,
-            turns=turns,
+            turns=expected_turns,
         )
     if turn_embs is None:
         console.print(
