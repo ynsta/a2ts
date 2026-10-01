@@ -204,7 +204,7 @@ rm -rf recordings/session_01/.transcripts/
 ### 4.2 Nemotron Model Type Not Recognized by Transformers
 - **Symptom**: `ValueError: The checkpoint you are trying to load has model type 'nemotron3_diarization' but Transformers does not recognize this architecture`.
 - **Cause**: NVIDIA Nemotron-3 Diarization was released on September 23, 2026. Standard PyPI releases `< 5.18` lack the architecture class.
-- **Fix**: Ensure `uv.lock` has installed `transformers` from git HEAD via `pyproject.toml`'s `[tool.uv.sources]` definition. Run `uv sync`.
+- **Fix**: NVIDIA Nemotron-3 requires `transformers>=5.18.0` (PyPI). Run `uv sync`.
 
 ### 4.3 `LibsndfileError: System error`
 - **Symptom**: Soundfile fails to open or write audio file.
@@ -225,7 +225,7 @@ rm -rf recordings/session_01/.transcripts/
 - **Pre-downloading Model Caches Before Disconnecting**:
   Ensure required model weights are cached in `~/.cache/huggingface/` and `~/.cache/speechbrain/`:
   - **Faster-Whisper**: `python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3')"`
-  - **Nemotron-3 Diarization**: `python -c "from transformers import AutoModelForAudioClassification; AutoModelForAudioClassification.from_pretrained('nvidia/Nemotron-3-Diarization')"`
+  - **Nemotron-3 Diarization**: `python -c "from transformers import AutoModelForAudioFrameClassification; AutoModelForAudioFrameClassification.from_pretrained('nvidia/Nemotron-3-Diarization')"`
   - **SpeechBrain ECAPA-TDNN**: `python -c "from speechbrain.inference.speaker import EncoderClassifier; EncoderClassifier.from_hparams(source='speechbrain/spkrec-ecapa-voxceleb')"`
   - **Tiktoken BPE**: `python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"`
 - Note that optional `--refine` requires external CLI access to `agy` and will egress network traffic if configured with hosted models like Gemini. Keep `--refine` disabled (the default) for air-gapped operations.

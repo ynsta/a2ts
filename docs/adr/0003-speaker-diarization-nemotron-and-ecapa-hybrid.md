@@ -43,5 +43,5 @@ We chose a **Hybrid Architecture**:
   - Overlapping speech captured accurately (14 overlap instances detected).
   - Full backward compatibility with existing `voice_profiles.json` databases.
 - **Negative**:
-  - Requires `transformers >= 5.18.0.dev0` (installed from git HEAD via `pyproject.toml` `[tool.uv.sources]`).
+  - Requires `transformers >= 5.18.0` (standard PyPI release).
   - Hard limit of 8 concurrent speakers in single audio chunk (sufficient for almost all sessions).
