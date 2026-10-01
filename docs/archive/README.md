@@ -19,6 +19,7 @@ For current, authoritative documentation, refer to the canonical suite in [`../`
 
 | File | Date | Original Purpose | Current Canonical Replacement |
 | :--- | :--- | :--- | :--- |
+| [`2026-10-01-v2-check-remediation.md`](./2026-10-01-v2-check-remediation.md) | 2026-10-01 | Implementation plan for v2 check reviews remediation | `../spec.md`, `../design.md`, `../codemap.md` |
 | [`2026-10-01-independent-check-remediation.md`](./2026-10-01-independent-check-remediation.md) | 2026-10-01 | Implementation plan for independent check reviews remediation | `../spec.md`, `../design.md`, `../codemap.md` |
 | [`2026-10-01-pre-release-reviews-remediation.md`](./2026-10-01-pre-release-reviews-remediation.md) | 2026-10-01 | Implementation plan for pre-release reviews remediation | `../spec.md`, `../design.md`, `../codemap.md` |
 | [`2026-09-30-opus-review-fixes.md`](./2026-09-30-opus-review-fixes.md) | 2026-09-30 | Implementation plan for Opus review fixes | `../spec.md`, `../design.md`, `../adr/0005-local-llm-refinement-via-agy-cli.md` |
