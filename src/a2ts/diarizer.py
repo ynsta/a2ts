@@ -234,14 +234,24 @@ def save_segment_embeddings(
 
 def load_segment_embeddings(
     cache_prefix: Path | str,
-    media_hash: str,
+    media_hash: str = "",
     expected_transcript_provenance_hash: str | None = None,
     expected_count: int | None = None,
     expected_entity_fingerprint: str | None = None,
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
     segments: Sequence[RawSegment] | None = None,
+    expected_media_hash: str | None = None,
 ) -> tuple[np.ndarray, list[int]] | None:
     """Load cached segment embeddings and indices, strictly validating provenance."""
+    if not expected_transcript_provenance_hash:
+        logger.debug(
+            "Segment embedding cache miss: expected_transcript_provenance_hash is None or empty"
+        )
+        return None
+
+    resolved_media_hash = (
+        expected_media_hash if expected_media_hash is not None else media_hash
+    )
     cache_prefix_path = Path(cache_prefix)
     if expected_entity_fingerprint is None and segments is not None:
         expected_entity_fingerprint = compute_entity_fingerprint(segments)
@@ -269,10 +279,10 @@ def load_segment_embeddings(
             prov.entity_kind,
         )
         return None
-    if prov.media_hash != media_hash:
+    if prov.media_hash != resolved_media_hash:
         logger.debug(
             "Segment embedding media_hash mismatch: expected '%s', got '%s'",
-            media_hash,
+            resolved_media_hash,
             prov.media_hash,
         )
         return None
@@ -283,10 +293,7 @@ def load_segment_embeddings(
             prov.embedding_model,
         )
         return None
-    if (
-        expected_transcript_provenance_hash is not None
-        and prov.transcript_provenance_hash != expected_transcript_provenance_hash
-    ):
+    if prov.transcript_provenance_hash != expected_transcript_provenance_hash:
         logger.debug(
             "Segment embedding transcript_provenance_hash mismatch: expected '%s', got '%s'",
             expected_transcript_provenance_hash,
@@ -366,14 +373,24 @@ def save_turn_embeddings(
 
 def load_turn_embeddings(
     cache_prefix: Path | str,
-    media_hash: str,
+    media_hash: str = "",
     expected_diarization_provenance_hash: str | None = None,
     expected_count: int | None = None,
     expected_entity_fingerprint: str | None = None,
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
     turns: Sequence[SpeakerTurn | AlignedTurn] | None = None,
+    expected_media_hash: str | None = None,
 ) -> tuple[np.ndarray, list[int]] | None:
     """Load cached turn embeddings and indices, strictly validating provenance."""
+    if not expected_diarization_provenance_hash:
+        logger.debug(
+            "Turn embedding cache miss: expected_diarization_provenance_hash is None or empty"
+        )
+        return None
+
+    resolved_media_hash = (
+        expected_media_hash if expected_media_hash is not None else media_hash
+    )
     cache_prefix_path = Path(cache_prefix)
     if expected_entity_fingerprint is None and turns is not None:
         expected_entity_fingerprint = compute_entity_fingerprint(turns)
@@ -401,10 +418,10 @@ def load_turn_embeddings(
             prov.entity_kind,
         )
         return None
-    if prov.media_hash != media_hash:
+    if prov.media_hash != resolved_media_hash:
         logger.debug(
             "Turn embedding media_hash mismatch: expected '%s', got '%s'",
-            media_hash,
+            resolved_media_hash,
             prov.media_hash,
         )
         return None
@@ -415,10 +432,7 @@ def load_turn_embeddings(
             prov.embedding_model,
         )
         return None
-    if (
-        expected_diarization_provenance_hash is not None
-        and prov.diarization_provenance_hash != expected_diarization_provenance_hash
-    ):
+    if prov.diarization_provenance_hash != expected_diarization_provenance_hash:
         logger.debug(
             "Turn embedding diarization_provenance_hash mismatch: expected '%s', got '%s'",
             expected_diarization_provenance_hash,
@@ -480,6 +494,7 @@ def extract_embeddings_for_segments(
             cache_prefix=cache_prefix,
             media_hash=resolved_media_hash,
             expected_transcript_provenance_hash=transcript_provenance_hash,
+            segments=segments,
         )
         if cached is not None:
             console.print(
@@ -571,6 +586,7 @@ def extract_embeddings_for_turns(
             cache_prefix=cache_prefix,
             media_hash=resolved_media_hash,
             expected_diarization_provenance_hash=diarization_provenance_hash,
+            turns=turns,
         )
         if cached is not None:
             console.print(
@@ -798,7 +814,8 @@ def diarize_segments(
     # Reconstruct cluster labels for all segments
     full_labels = [0] * len(segments)
     for valid_idx, label in zip(valid_indices, labels, strict=False):
-        full_labels[valid_idx] = int(label)
+        if 0 <= valid_idx < len(full_labels):
+            full_labels[valid_idx] = int(label)
 
     # For any skipped very short segments, propagate adjacent label
     valid_indices_set = set(valid_indices)

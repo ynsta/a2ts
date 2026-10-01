@@ -49,6 +49,7 @@ from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
 from a2ts.models import (
     AlignedTurn,
     ClusterSplit,
+    DiarizationCacheFile,
     DiarizationCacheProvenance,
     RawSegment,
     SessionMetadata,
@@ -507,6 +508,7 @@ def run(
         device=device,
         transcript_provenance_hash=transcript_prov_hash,
     )
+    diar_prov_hash = diar_prov.compute_hash()
 
     if diarize:
         speaker_turns = diarize_segments(
@@ -553,13 +555,13 @@ def run(
     loaded_db: VoiceProfilesDatabase | None = None
     if voice_profiles.is_file() and diarize:
         loaded_db = load_voice_profiles(voice_profiles)
-        diar_prov_hash = diar_prov.compute_hash()
         turn_embs: tuple[np.ndarray, list[int]] | None = None
         if not force:
             turn_embs = load_turn_embeddings(
                 cache_prefix=diarization_dir / file_hash,
                 media_hash=file_hash,
                 expected_diarization_provenance_hash=diar_prov_hash,
+                turns=speaker_turns,
             )
 
         if (
@@ -663,39 +665,32 @@ def run(
 
     # Auto-enroll / update voice profiles
     if diarize and not closed_set:
-        embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
-        indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
         has_manual_speakers = any(
             not v.startswith("SPEAKER_")
             for cid, v in mapping.cluster_defaults.items()
             if mapping.label_sources.get(cid) == "manual"
         )
-        if (
-            (not embeddings_npy.is_file() or not indices_json.is_file() or force)
-            and speaker_turns
-            and has_manual_speakers
-            and audio_path.is_file()
-        ):
-            extract_embeddings_for_turns(
-                audio_path=audio_path,
-                turns=speaker_turns,
-                device=device,
-                cache_prefix=diarization_dir / file_hash,
-                force=force,
-            )
-            embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
-            indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
-        if has_manual_speakers:
-            if embeddings_npy.is_file() and indices_json.is_file():
-                try:
-                    embeddings = np.load(embeddings_npy)
-                    valid_indices = [
-                        int(x)
-                        for x in json.loads(indices_json.read_text(encoding="utf-8"))
-                    ]
-                except (OSError, ValueError, json.JSONDecodeError):
-                    embeddings = np.empty((0, 0), dtype=np.float32)
-                    valid_indices = []
+        if has_manual_speakers and speaker_turns:
+            loaded_turn_data: tuple[np.ndarray, list[int]] | None = None
+            if not force:
+                loaded_turn_data = load_turn_embeddings(
+                    diarization_dir / file_hash,
+                    expected_media_hash=file_hash,
+                    expected_diarization_provenance_hash=diar_prov_hash,
+                    turns=speaker_turns,
+                )
+            if loaded_turn_data is None and audio_path.is_file():
+                loaded_turn_data = extract_embeddings_for_turns(
+                    audio_path=audio_path,
+                    turns=speaker_turns,
+                    device=device,
+                    cache_prefix=diarization_dir / file_hash,
+                    force=force,
+                    media_hash=file_hash,
+                    diarization_provenance_hash=diar_prov_hash,
+                )
+            if loaded_turn_data is not None:
+                embeddings, valid_indices = loaded_turn_data
             else:
                 embeddings = np.empty((0, 0), dtype=np.float32)
                 valid_indices = []
@@ -901,9 +896,22 @@ def review(
 
     turn_embs: tuple[np.ndarray, list[int]] | None = None
     if media_hash:
+        expected_diar_prov_hash: str | None = None
+        diar_cache_path = diarization_dir / f"{media_hash}.json"
+        if diar_cache_path.is_file():
+            try:
+                diar_cache_file = DiarizationCacheFile.model_validate_json(
+                    diar_cache_path.read_text(encoding="utf-8")
+                )
+                expected_diar_prov_hash = diar_cache_file.provenance.compute_hash()
+            except (OSError, ValueError, json.JSONDecodeError):
+                expected_diar_prov_hash = None
+
         turn_embs = load_turn_embeddings(
             cache_prefix=diarization_dir / media_hash,
-            media_hash=media_hash,
+            expected_media_hash=media_hash,
+            expected_diarization_provenance_hash=expected_diar_prov_hash,
+            turns=turns,
         )
     if turn_embs is None:
         console.print(

@@ -204,8 +204,15 @@ def test_force_invalidates_cache_and_reextracts(tmp_path: Path) -> None:
         np.array([[1.0, 0.0]], dtype=np.float32),
     )
     (tmp_path / "force_test_segment_indices.json").write_text("[0]", encoding="utf-8")
+    from a2ts.diarizer import compute_entity_fingerprint
+
+    trans_hash = "force_trans_hash"
     prov = EmbeddingCacheProvenance(
-        entity_kind="segment", media_hash="force_test", count=1
+        entity_kind="segment",
+        media_hash="force_test",
+        count=1,
+        transcript_provenance_hash=trans_hash,
+        entity_fingerprint=compute_entity_fingerprint(segments),
     )
     (tmp_path / "force_test_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -223,14 +230,24 @@ def test_force_invalidates_cache_and_reextracts(tmp_path: Path) -> None:
 
         # Without force: cache loaded, no model call
         emb_matrix, _valid_indices = extract_embeddings(
-            audio_path, segments, device="cpu", cache_prefix=cache_prefix, force=False
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            force=False,
+            transcript_provenance_hash=trans_hash,
         )
         mock_model.assert_not_called()
         assert np.allclose(emb_matrix, [[1.0, 0.0]])
 
         # With force=True: cache ignored, model called
         emb_matrix_forced, _valid_indices_forced = extract_embeddings(
-            audio_path, segments, device="cpu", cache_prefix=cache_prefix, force=True
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            force=True,
+            transcript_provenance_hash=trans_hash,
         )
         mock_model.assert_called_once()
         assert np.allclose(emb_matrix_forced, [[0.0, 1.0]])
@@ -299,11 +316,26 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
     )
 
     # Transcripts cache
+    from a2ts.models import TranscriptCacheProvenance
+
     transcripts_dir = session_dir / "transcripts"
     transcripts_dir.mkdir()
     seg = RawSegment(id=0, start=0.0, end=1.0, text="hello")
+    trans_prov = TranscriptCacheProvenance(
+        media_hash=media_hash,
+        engine="whisper",
+        model_name="base",
+        prompt_hash="nohash",
+        compute_type="float16",
+    )
     (transcripts_dir / f"{media_hash}_whisper.json").write_text(
-        json.dumps([seg.model_dump()]), encoding="utf-8"
+        json.dumps(
+            {
+                "provenance": trans_prov.model_dump(),
+                "segments": [seg.model_dump()],
+            }
+        ),
+        encoding="utf-8",
     )
 
     # Put only legacy alias files in diarization dir
@@ -332,6 +364,7 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
         entity_kind="segment",
         media_hash=media_hash,
         count=1,
+        transcript_provenance_hash=trans_prov.compute_hash(),
     )
     (diar_dir / f"{media_hash}_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -517,6 +550,7 @@ def test_segment_embeddings_count_mismatch(tmp_path: Path) -> None:
         load_segment_embeddings(
             prefix,
             media_hash="hash1",
+            expected_transcript_provenance_hash="trans_v1",
             expected_count=3,
         )
         is None
@@ -526,7 +560,14 @@ def test_segment_embeddings_count_mismatch(tmp_path: Path) -> None:
     np.save(
         f"{prefix}_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32)
     )
-    assert load_segment_embeddings(prefix, media_hash="hash1") is None
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="hash1",
+            expected_transcript_provenance_hash="trans_v1",
+        )
+        is None
+    )
 
 
 def test_turn_embeddings_diarization_provenance_invalidation(tmp_path: Path) -> None:
@@ -782,6 +823,7 @@ def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> No
         emb_matrix=mat,
         valid_indices=indices,
         media_hash="fp_media",
+        diarization_provenance_hash="fp_diar_hash",
         turns=turns,
     )
 
@@ -790,6 +832,7 @@ def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> No
     loaded = load_turn_embeddings(
         prefix,
         media_hash="fp_media",
+        expected_diarization_provenance_hash="fp_diar_hash",
         expected_entity_fingerprint=fp,
     )
     assert loaded is not None
@@ -798,6 +841,7 @@ def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> No
     loaded_via_turns = load_turn_embeddings(
         prefix,
         media_hash="fp_media",
+        expected_diarization_provenance_hash="fp_diar_hash",
         turns=turns,
     )
     assert loaded_via_turns is not None
@@ -807,6 +851,7 @@ def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> No
         load_turn_embeddings(
             prefix,
             media_hash="fp_media",
+            expected_diarization_provenance_hash="fp_diar_hash",
             expected_entity_fingerprint="wrong_fingerprint",
         )
         is None
@@ -818,6 +863,7 @@ def test_load_turn_embeddings_validates_entity_fingerprint(tmp_path: Path) -> No
         load_turn_embeddings(
             prefix,
             media_hash="fp_media",
+            expected_diarization_provenance_hash="fp_diar_hash",
             turns=modified_turns,
         )
         is None
@@ -842,6 +888,7 @@ def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) ->
         emb_matrix=mat,
         valid_indices=indices,
         media_hash="seg_fp_media",
+        transcript_provenance_hash="fp_trans_hash",
         segments=segs,
     )
 
@@ -849,6 +896,7 @@ def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) ->
     loaded = load_segment_embeddings(
         prefix,
         media_hash="seg_fp_media",
+        expected_transcript_provenance_hash="fp_trans_hash",
         expected_entity_fingerprint=fp,
     )
     assert loaded is not None
@@ -857,6 +905,7 @@ def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) ->
     loaded_via_segs = load_segment_embeddings(
         prefix,
         media_hash="seg_fp_media",
+        expected_transcript_provenance_hash="fp_trans_hash",
         segments=segs,
     )
     assert loaded_via_segs is not None
@@ -866,6 +915,7 @@ def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) ->
         load_segment_embeddings(
             prefix,
             media_hash="seg_fp_media",
+            expected_transcript_provenance_hash="fp_trans_hash",
             expected_entity_fingerprint="wrong_fp",
         )
         is None
@@ -877,6 +927,7 @@ def test_load_segment_embeddings_validates_entity_fingerprint(tmp_path: Path) ->
         load_segment_embeddings(
             prefix,
             media_hash="seg_fp_media",
+            expected_transcript_provenance_hash="fp_trans_hash",
             segments=modified_segs,
         )
         is None
@@ -1045,3 +1096,126 @@ def test_cli_run_invalidates_turn_embeddings_on_diarization_change(
         assert result.exit_code == 0
         # Because cached diarization_provenance_hash is stale, extract_embeddings_for_turns MUST be called
         mock_extract_turns.assert_called_once()
+
+
+def test_load_turn_embeddings_none_or_empty_diarization_provenance_returns_none(
+    tmp_path: Path,
+) -> None:
+    """load_turn_embeddings returns None if expected_diarization_provenance_hash is None or empty."""
+    from a2ts.diarizer import load_turn_embeddings, save_turn_embeddings
+
+    prefix = tmp_path / "test_none_diar_prov"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
+
+    save_turn_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=[0],
+        media_hash="m1",
+        diarization_provenance_hash="diar_hash_123",
+        turns=turns,
+    )
+
+    # None hash -> cache miss
+    assert (
+        load_turn_embeddings(
+            prefix,
+            media_hash="m1",
+            expected_diarization_provenance_hash=None,
+            turns=turns,
+        )
+        is None
+    )
+
+    # Empty string hash -> cache miss
+    assert (
+        load_turn_embeddings(
+            prefix,
+            media_hash="m1",
+            expected_diarization_provenance_hash="",
+            turns=turns,
+        )
+        is None
+    )
+
+
+def test_load_segment_embeddings_none_or_empty_transcript_provenance_returns_none(
+    tmp_path: Path,
+) -> None:
+    """load_segment_embeddings returns None if expected_transcript_provenance_hash is None or empty."""
+    from a2ts.diarizer import load_segment_embeddings, save_segment_embeddings
+
+    prefix = tmp_path / "test_none_trans_prov"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    segs = [RawSegment(id=0, start=0.0, end=2.0, text="hello")]
+
+    save_segment_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=[0],
+        media_hash="m1",
+        transcript_provenance_hash="trans_hash_123",
+        segments=segs,
+    )
+
+    # None hash -> cache miss
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="m1",
+            expected_transcript_provenance_hash=None,
+            segments=segs,
+        )
+        is None
+    )
+
+    # Empty string hash -> cache miss
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="m1",
+            expected_transcript_provenance_hash="",
+            segments=segs,
+        )
+        is None
+    )
+
+
+def test_load_segment_embeddings_shifted_timestamps_returns_none(
+    tmp_path: Path,
+) -> None:
+    """Shifting timestamps by 0.5s while preserving media_hash and provenance hash causes load_segment_embeddings to return None."""
+    from a2ts.diarizer import load_segment_embeddings, save_segment_embeddings
+
+    prefix = tmp_path / "test_shift_seg"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    segs = [RawSegment(id=0, start=1.0, end=2.0, text="hello")]
+
+    save_segment_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=[0],
+        media_hash="shift_media",
+        transcript_provenance_hash="trans_valid",
+        segments=segs,
+    )
+
+    # Matching segments loads successfully
+    loaded = load_segment_embeddings(
+        prefix,
+        media_hash="shift_media",
+        expected_transcript_provenance_hash="trans_valid",
+        segments=segs,
+    )
+    assert loaded is not None
+
+    # Shifted timestamps by 0.5s causes cache miss
+    shifted_segs = [RawSegment(id=0, start=1.5, end=2.5, text="hello")]
+    loaded_shifted = load_segment_embeddings(
+        prefix,
+        media_hash="shift_media",
+        expected_transcript_provenance_hash="trans_valid",
+        segments=shifted_segs,
+    )
+    assert loaded_shifted is None

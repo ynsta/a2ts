@@ -556,11 +556,15 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
         device="cuda",
         transcript_provenance_hash=thash,
     )
+    from a2ts.diarizer import compute_entity_fingerprint
+
+    spk_turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
     prov = EmbeddingCacheProvenance(
         entity_kind="turn",
         media_hash="abc1234",
         count=1,
         diarization_provenance_hash=diar_prov.compute_hash(),
+        entity_fingerprint=compute_entity_fingerprint(spk_turns),
     )
     (diar_dir / "abc1234_turn_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -659,6 +663,23 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
         json.dumps(session_meta), encoding="utf-8"
     )
 
+    from a2ts.diarizer import compute_entity_fingerprint
+    from a2ts.models import DiarizationCacheFile, DiarizationCacheProvenance
+
+    diar_prov = DiarizationCacheProvenance(
+        media_hash="hash5678",
+        engine="ecapa",
+        cluster_threshold=0.6,
+        device="cpu",
+    )
+    diar_cache = DiarizationCacheFile(
+        provenance=diar_prov,
+        turns=[SpeakerTurn(id=0, start=0.0, end=5.0, cluster_id="SPEAKER_00")],
+    )
+    (diar_dir / "hash5678.json").write_text(
+        diar_cache.model_dump_json(), encoding="utf-8"
+    )
+
     emb = np.zeros((1, 192), dtype=np.float32)
     emb[0, 0] = 1.0
     np.save(diar_dir / "hash5678_turn_embeddings.npy", emb)
@@ -667,6 +688,8 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
         entity_kind="turn",
         media_hash="hash5678",
         count=1,
+        diarization_provenance_hash=diar_prov.compute_hash(),
+        entity_fingerprint=compute_entity_fingerprint(turns),
     )
     (diar_dir / "hash5678_turn_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -722,6 +745,15 @@ def test_recluster_command(tmp_path: Path) -> None:
     (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
 
     # Create dummy raw segments cache
+    from a2ts.models import TranscriptCacheFile, TranscriptCacheProvenance
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash="hash123",
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
     transcripts_dir = session_dir / "transcripts"
     transcripts_dir.mkdir()
     raw_segs = [
@@ -729,7 +761,8 @@ def test_recluster_command(tmp_path: Path) -> None:
         RawSegment(id=1, start=1.5, end=2.5, text="Turn 2", words=[]),
     ]
     (transcripts_dir / "hash123_whisper.json").write_text(
-        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+        TranscriptCacheFile(provenance=trans_prov, segments=raw_segs).model_dump_json(),
+        encoding="utf-8",
     )
 
     # Create dummy embeddings cache
@@ -742,6 +775,7 @@ def test_recluster_command(tmp_path: Path) -> None:
         entity_kind="segment",
         media_hash="hash123",
         count=2,
+        transcript_provenance_hash=trans_prov.compute_hash(),
     )
     (diar_dir / "hash123_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -809,6 +843,15 @@ def test_recluster_resets_stale_cluster_defaults(tmp_path: Path) -> None:
     )
     (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
 
+    from a2ts.models import TranscriptCacheFile, TranscriptCacheProvenance
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash="hash_stale",
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
     transcripts_dir = session_dir / "transcripts"
     transcripts_dir.mkdir()
     raw_segs = [
@@ -816,7 +859,8 @@ def test_recluster_resets_stale_cluster_defaults(tmp_path: Path) -> None:
         RawSegment(id=1, start=1.5, end=2.5, text="Turn 2", words=[]),
     ]
     (transcripts_dir / "hash_stale_whisper.json").write_text(
-        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+        TranscriptCacheFile(provenance=trans_prov, segments=raw_segs).model_dump_json(),
+        encoding="utf-8",
     )
 
     np.save(
@@ -830,6 +874,7 @@ def test_recluster_resets_stale_cluster_defaults(tmp_path: Path) -> None:
         entity_kind="segment",
         media_hash="hash_stale",
         count=2,
+        transcript_provenance_hash=trans_prov.compute_hash(),
     )
     (diar_dir / "hash_stale_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -1060,6 +1105,15 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
     )
     (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
 
+    from a2ts.models import TranscriptCacheFile, TranscriptCacheProvenance
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash="hash_closed",
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
     transcripts_dir = session_dir / "transcripts"
     transcripts_dir.mkdir()
     raw_segs = [
@@ -1068,7 +1122,8 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
         RawSegment(id=2, start=2.5, end=3.0, text="Turn 3 (short blip)", words=[]),
     ]
     (transcripts_dir / "hash_closed_whisper.json").write_text(
-        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+        TranscriptCacheFile(provenance=trans_prov, segments=raw_segs).model_dump_json(),
+        encoding="utf-8",
     )
 
     # 2 embeddings for first two segments; segment 2 has no embedding (short blip)
@@ -1083,6 +1138,7 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
         entity_kind="segment",
         media_hash="hash_closed",
         count=2,
+        transcript_provenance_hash=trans_prov.compute_hash(),
     )
     (diar_dir / "hash_closed_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
@@ -1737,3 +1793,92 @@ def test_review_and_split_respect_session_rpg_normalize(tmp_path: Path) -> None:
     assert result_split.exit_code == 0
     content_split = split_out.read_text(encoding="utf-8")
     assert "dé 20" in content_split
+
+
+def test_cli_run_auto_enroll_rejects_stale_turn_embeddings_with_no_profile_db(
+    tmp_path: Path,
+) -> None:
+    """Run auto-enrollment rejects stale turn embeddings cache when no profile DB pre-exists."""
+    import numpy as np
+
+    from a2ts.models import VoiceProfilesDatabase
+
+    media_file = tmp_path / "session.mp3"
+    media_file.write_bytes(b"dummy audio content")
+    audio_wav = tmp_path / "audio.wav"
+    audio_wav.touch()
+
+    cache_dir = tmp_path / ".a2ts"
+    file_hash = "stale_run_hash_456"
+    diar_dir = cache_dir / "diarization"
+    diar_dir.mkdir(parents=True)
+
+    # 1. Setup: No profile DB exists prior to run
+    profiles_path = tmp_path / "voice_profiles.json"
+    assert not profiles_path.exists()
+
+    # 2. Create stale turn cache with vector [0.0, 0.0, 0.0, 1.0] and STALE_HASH
+    stale_emb = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+    np.save(diar_dir / f"{file_hash}_turn_embeddings.npy", stale_emb)
+    (diar_dir / f"{file_hash}_turn_indices.json").write_text("[0]", encoding="utf-8")
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash=file_hash,
+        count=1,
+        diarization_provenance_hash="STALE_HASH",
+    )
+    (diar_dir / f"{file_hash}_turn_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
+
+    fresh_emb = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+
+    with (
+        patch("a2ts.cli.compute_file_hash", return_value=file_hash),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=audio_wav),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.diarize_segments") as mock_diarize,
+        patch("a2ts.cli.extract_embeddings_for_turns") as mock_extract_turns,
+        patch(
+            "a2ts.cli.run_interactive_review",
+            return_value=SpeakersMapping(
+                cluster_defaults={"SPEAKER_00": "Alice"},
+                label_sources={"SPEAKER_00": "manual"},
+            ),
+        ),
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Alice speaking", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+        mock_diarize.return_value = [
+            SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")
+        ]
+        mock_extract_turns.return_value = (fresh_emb, [0])
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--output",
+                str(tmp_path / "out.md"),
+                "--cache-dir",
+                str(cache_dir),
+                "--voice-profiles",
+                str(profiles_path),
+                "--no-refine",
+                "--interactive",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert profiles_path.is_file()
+        db = VoiceProfilesDatabase.model_validate_json(
+            profiles_path.read_text(encoding="utf-8")
+        )
+        assert "Alice" in db.speakers
+        # Must match fresh extraction [1.0, 0.0, 0.0, 0.0], NOT stale [0.0, 0.0, 0.0, 1.0]
+        assert db.speakers["Alice"].centroid == [1.0, 0.0, 0.0, 0.0]
