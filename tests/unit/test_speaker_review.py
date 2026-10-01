@@ -6,6 +6,7 @@ from a2ts.speaker_review import (
     apply_speakers_mapping,
     collect_speaker_stats,
     load_speakers_mapping,
+    resolve_speaker_for_turn,
     run_interactive_review,
     save_speakers_mapping,
 )
@@ -518,3 +519,90 @@ def test_run_interactive_review_filter_slice() -> None:
         mapping = run_interactive_review(turns, candidates, filter_slice=1)
         assert mapping.cluster_defaults == {"SPEAKER_01": "Bob"}
         assert mock_ask.call_count == 1
+
+
+def test_resolve_speaker_for_turn_precedence() -> None:
+    # 1. Turn override beats everything
+    mapping1 = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice"},
+        slice_overrides={"1": {"SPEAKER_00": "Bob"}},
+        turn_overrides={42: "Charlie"},
+    )
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=42,
+            cluster_id="SPEAKER_00",
+            time_slice_id=1,
+            mapping=mapping1,
+            fallback_speaker="Fallback",
+        )
+        == "Charlie"
+    )
+
+    # 2. Slice override beats cluster default and fallback
+    mapping2 = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice"},
+        slice_overrides={"1": {"SPEAKER_00": "Bob"}},
+    )
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=10,
+            cluster_id="SPEAKER_00",
+            time_slice_id=1,
+            mapping=mapping2,
+            fallback_speaker="Fallback",
+        )
+        == "Bob"
+    )
+
+    # 3. Cluster default beats fallback
+    mapping3 = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice"},
+        slice_overrides={"1": {"SPEAKER_00": "Bob"}},
+    )
+    # Different time slice (slice 2) -> falls back to cluster default
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=10,
+            cluster_id="SPEAKER_00",
+            time_slice_id=2,
+            mapping=mapping3,
+            fallback_speaker="Fallback",
+        )
+        == "Alice"
+    )
+
+    # 4. Fallback speaker used when no override/default and fallback != cluster_id
+    empty_mapping = SpeakersMapping()
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=10,
+            cluster_id="SPEAKER_00",
+            time_slice_id=0,
+            mapping=empty_mapping,
+            fallback_speaker="ExistingSpeaker",
+        )
+        == "ExistingSpeaker"
+    )
+
+    # 5. Raw cluster ID returned when no override/default and fallback is None or equals cluster_id
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=10,
+            cluster_id="SPEAKER_00",
+            time_slice_id=0,
+            mapping=empty_mapping,
+            fallback_speaker=None,
+        )
+        == "SPEAKER_00"
+    )
+    assert (
+        resolve_speaker_for_turn(
+            turn_id=10,
+            cluster_id="SPEAKER_00",
+            time_slice_id=0,
+            mapping=empty_mapping,
+            fallback_speaker="SPEAKER_00",
+        )
+        == "SPEAKER_00"
+    )

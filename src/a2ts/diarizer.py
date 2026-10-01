@@ -37,6 +37,7 @@ from a2ts.models import (
     VoiceProfile,
     VoiceProfilesDatabase,
 )
+from a2ts.speaker_review import resolve_speaker_for_turn
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -887,6 +888,23 @@ def compute_voice_profiles(
         tid = getattr(turn, "turn_id", getattr(turn, "id", idx))
         turn_by_id[tid] = turn
 
+    mapping: SpeakersMapping
+    if isinstance(speakers_mapping, SpeakersMapping):
+        mapping = speakers_mapping
+    else:
+        mapping = SpeakersMapping(
+            cluster_defaults={
+                str(k): v
+                for k, v in speakers_mapping.items()
+                if not (isinstance(k, int) or (isinstance(k, str) and k.isdigit()))
+            },
+            turn_overrides={
+                int(k): v
+                for k, v in speakers_mapping.items()
+                if isinstance(k, int) or (isinstance(k, str) and k.isdigit())
+            },
+        )
+
     speaker_samples: dict[str, list[tuple[np.ndarray, str]]] = {}
 
     for i, valid_idx in enumerate(valid_indices):
@@ -903,40 +921,26 @@ def compute_voice_profiles(
             else matched_turn.id
         )
         cluster_id = matched_turn.cluster_id
-        resolved_spk: str | None = None
 
-        if isinstance(speakers_mapping, SpeakersMapping):
-            if (
-                speakers_mapping.label_sources
-                and speakers_mapping.label_sources.get(cluster_id) != "manual"
-            ):
-                continue
-            if turn_id in speakers_mapping.turn_overrides:
-                resolved_spk = speakers_mapping.turn_overrides[turn_id]
-            elif cluster_id in speakers_mapping.cluster_defaults:
-                resolved_spk = speakers_mapping.cluster_defaults[cluster_id]
-            elif (
-                isinstance(matched_turn, SpeakerTurn) and matched_turn.resolved_speaker
-            ):
-                resolved_spk = matched_turn.resolved_speaker
-            elif isinstance(matched_turn, AlignedTurn) and matched_turn.speaker:
-                resolved_spk = matched_turn.speaker
-            else:
-                resolved_spk = cluster_id
-        elif isinstance(speakers_mapping, dict):
-            turn_key = str(turn_id)
-            if turn_key in speakers_mapping:
-                resolved_spk = speakers_mapping[turn_key]
-            elif cluster_id in speakers_mapping:
-                resolved_spk = speakers_mapping[cluster_id]
-            elif (
-                isinstance(matched_turn, SpeakerTurn) and matched_turn.resolved_speaker
-            ):
-                resolved_spk = matched_turn.resolved_speaker
-            elif isinstance(matched_turn, AlignedTurn) and matched_turn.speaker:
-                resolved_spk = matched_turn.speaker
-            else:
-                resolved_spk = cluster_id
+        if mapping.label_sources and mapping.label_sources.get(cluster_id) != "manual":
+            continue
+
+        fallback = (
+            matched_turn.resolved_speaker
+            if isinstance(matched_turn, SpeakerTurn)
+            else matched_turn.speaker
+            if isinstance(matched_turn, AlignedTurn)
+            else None
+        )
+        time_slice_id = getattr(matched_turn, "time_slice_id", 0)
+
+        resolved_spk: str = resolve_speaker_for_turn(
+            turn_id=turn_id,
+            cluster_id=cluster_id,
+            time_slice_id=time_slice_id,
+            mapping=mapping,
+            fallback_speaker=fallback,
+        )
 
         if not resolved_spk or resolved_spk.startswith("SPEAKER_"):
             continue
@@ -994,6 +998,10 @@ def compute_voice_profiles(
         version=existing_db.version if existing_db else 1,
         speakers=profiles,
     )
+
+
+# Backward-compatible / brief alias
+compute_voice_profiles_from_turns = compute_voice_profiles
 
 
 def save_voice_profiles(db: VoiceProfilesDatabase, path: Path) -> None:

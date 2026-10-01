@@ -36,30 +36,54 @@ def collect_speaker_stats(turns: list[AlignedTurn]) -> dict[str, dict[str, Any]]
     return stats
 
 
+def resolve_speaker_for_turn(
+    turn_id: int,
+    cluster_id: str,
+    time_slice_id: int,
+    mapping: SpeakersMapping,
+    fallback_speaker: str | None = None,
+) -> str:
+    """Resolve speaker attribution for a single turn based on precedence rules.
+
+    Resolution order:
+    1. Specific turn override: mapping.turn_overrides[turn_id]
+    2. Time slice override: mapping.slice_overrides[str(time_slice_id)][cluster_id]
+    3. Cluster default: mapping.cluster_defaults[cluster_id]
+    4. Fallback speaker (if provided and != cluster_id)
+    5. Raw cluster ID
+    """
+    if turn_id in mapping.turn_overrides:
+        return mapping.turn_overrides[turn_id]
+
+    slice_key = str(time_slice_id)
+    if (
+        slice_key in mapping.slice_overrides
+        and cluster_id in mapping.slice_overrides[slice_key]
+    ):
+        return mapping.slice_overrides[slice_key][cluster_id]
+
+    if cluster_id in mapping.cluster_defaults:
+        return mapping.cluster_defaults[cluster_id]
+
+    if fallback_speaker and fallback_speaker != cluster_id:
+        return fallback_speaker
+
+    return cluster_id
+
+
 def apply_speakers_mapping(
     turns: list[AlignedTurn], mapping: SpeakersMapping
 ) -> list[AlignedTurn]:
     """Apply cluster defaults, slice overrides, and turn overrides to aligned turns."""
     updated: list[AlignedTurn] = []
     for turn in turns:
-        slice_key = str(turn.time_slice_id)
-        speaker = turn.cluster_id
-
-        # 1. Cluster default
-        if turn.cluster_id in mapping.cluster_defaults:
-            speaker = mapping.cluster_defaults[turn.cluster_id]
-
-        # 2. Time slice override
-        if (
-            slice_key in mapping.slice_overrides
-            and turn.cluster_id in mapping.slice_overrides[slice_key]
-        ):
-            speaker = mapping.slice_overrides[slice_key][turn.cluster_id]
-
-        # 3. Specific turn override
-        if turn.turn_id in mapping.turn_overrides:
-            speaker = mapping.turn_overrides[turn.turn_id]
-
+        speaker = resolve_speaker_for_turn(
+            turn_id=turn.turn_id,
+            cluster_id=turn.cluster_id,
+            time_slice_id=turn.time_slice_id,
+            mapping=mapping,
+            fallback_speaker=turn.speaker,
+        )
         updated.append(turn.model_copy(update={"speaker": speaker}))
     return updated
 

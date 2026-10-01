@@ -605,3 +605,93 @@ def test_extract_embeddings_for_turns(
     assert Path(f"{cache_prefix}_turn_embeddings_provenance.json").is_file()
     assert not Path(f"{cache_prefix}_embeddings.npy").exists()
     assert not Path(f"{cache_prefix}_indices.json").exists()
+
+
+def test_compute_voice_profiles_slice_override_alignment() -> None:
+    from a2ts.diarizer import compute_voice_profiles
+    from a2ts.models import AlignedTurn, SpeakersMapping
+
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    valid_indices = [0, 1]
+
+    # Turn 0 in Slice 1 (has slice override to Bob)
+    # Turn 1 in Slice 2 (no slice override, should use cluster default Alice)
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello from slice 1",
+            time_slice_id=1,
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=10.0,
+            end=12.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello from slice 2",
+            time_slice_id=2,
+        ),
+    ]
+
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice"},
+        slice_overrides={"1": {"SPEAKER_00": "Bob"}},
+        label_sources={"SPEAKER_00": "manual"},
+    )
+
+    db = compute_voice_profiles(embeddings, valid_indices, turns, mapping)
+
+    # Bob must be enrolled from turn 0 (slice 1 override), NOT Alice
+    assert "Bob" in db.speakers
+    assert db.speakers["Bob"].sample_count == 1
+    assert np.allclose(db.speakers["Bob"].centroid, [1.0, 0.0])
+
+    # Alice must be enrolled from turn 1 (slice 2 defaults to Alice)
+    assert "Alice" in db.speakers
+    assert db.speakers["Alice"].sample_count == 1
+    assert np.allclose(db.speakers["Alice"].centroid, [0.0, 1.0])
+
+
+def test_compute_voice_profiles_turn_override_priority() -> None:
+    from a2ts.diarizer import compute_voice_profiles
+    from a2ts.models import AlignedTurn, SpeakersMapping
+
+    embeddings = np.array([[1.0, 0.0]], dtype=np.float32)
+    valid_indices = [0]
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn with specific override",
+            time_slice_id=1,
+        ),
+    ]
+
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Alice"},
+        slice_overrides={"1": {"SPEAKER_00": "Bob"}},
+        turn_overrides={0: "Charlie"},
+        label_sources={"SPEAKER_00": "manual"},
+    )
+
+    db = compute_voice_profiles(embeddings, valid_indices, turns, mapping)
+
+    # Turn override Charlie takes priority over slice override Bob and cluster default Alice
+    assert "Charlie" in db.speakers
+    assert db.speakers["Charlie"].sample_count == 1
+    assert "Bob" not in db.speakers
+    assert "Alice" not in db.speakers
