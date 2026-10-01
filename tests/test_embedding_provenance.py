@@ -17,6 +17,7 @@ from a2ts.models import (
     EmbeddingCacheProvenance,
     RawSegment,
     SessionMetadata,
+    SpeakersMapping,
     SpeakerTurn,
 )
 
@@ -327,6 +328,14 @@ def test_cli_recluster_rejects_legacy_alias(tmp_path: Path) -> None:
     (diar_dir / f"{media_hash}_segment_indices.json").write_text(
         "[0]", encoding="utf-8"
     )
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash=media_hash,
+        count=1,
+    )
+    (diar_dir / f"{media_hash}_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     result2 = runner.invoke(
         app, ["recluster", str(session_dir), "--output", str(tmp_path / "out.md")]
@@ -400,3 +409,356 @@ def test_cli_run_passes_force_to_embeddings(
     assert mock_extract_turns.called
     for call in mock_extract_turns.call_args_list:
         assert call.kwargs.get("force") is True
+
+
+def test_embedding_cache_provenance_new_fields() -> None:
+    """Verify EmbeddingCacheProvenance supports transcript/diarization hashes and entity fingerprint."""
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash="hash123",
+        count=3,
+        transcript_provenance_hash="trans_hash_abc",
+        diarization_provenance_hash="diar_hash_xyz",
+        entity_fingerprint="fingerprint_123",
+    )
+    assert prov.transcript_provenance_hash == "trans_hash_abc"
+    assert prov.diarization_provenance_hash == "diar_hash_xyz"
+    assert prov.entity_fingerprint == "fingerprint_123"
+
+
+def test_load_segment_embeddings_missing_or_corrupt_provenance(tmp_path: Path) -> None:
+    """load_segment_embeddings returns None if provenance file is missing or corrupt."""
+    from a2ts.diarizer import load_segment_embeddings
+
+    prefix = tmp_path / "test_seg"
+    np.save(
+        f"{prefix}_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32)
+    )
+    Path(f"{prefix}_segment_indices.json").write_text("[0]", encoding="utf-8")
+
+    # 1. Missing provenance file -> None
+    res = load_segment_embeddings(prefix, media_hash="test_seg")
+    assert res is None
+
+    # 2. Corrupt JSON in provenance file -> None
+    Path(f"{prefix}_segment_embeddings_provenance.json").write_text(
+        "not json", encoding="utf-8"
+    )
+    res = load_segment_embeddings(prefix, media_hash="test_seg")
+    assert res is None
+
+
+def test_segment_embeddings_transcript_provenance_invalidation(tmp_path: Path) -> None:
+    """load_segment_embeddings returns None when transcript_provenance_hash changes."""
+    from a2ts.diarizer import load_segment_embeddings, save_segment_embeddings
+
+    prefix = tmp_path / "test_seg"
+    mat = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    indices = [0, 1]
+
+    save_segment_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=indices,
+        media_hash="hash1",
+        transcript_provenance_hash="prompt_v1_hash",
+    )
+
+    # Correct transcript hash loads successfully
+    loaded = load_segment_embeddings(
+        prefix,
+        media_hash="hash1",
+        expected_transcript_provenance_hash="prompt_v1_hash",
+    )
+    assert loaded is not None
+    loaded_mat, loaded_indices = loaded
+    assert np.allclose(loaded_mat, mat)
+    assert loaded_indices == indices
+
+    # Changed transcript hash returns None
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="hash1",
+            expected_transcript_provenance_hash="prompt_v2_hash",
+        )
+        is None
+    )
+
+    # Media hash mismatch returns None
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="different_media",
+            expected_transcript_provenance_hash="prompt_v1_hash",
+        )
+        is None
+    )
+
+
+def test_segment_embeddings_count_mismatch(tmp_path: Path) -> None:
+    """load_segment_embeddings returns None if count or matrix/indices lengths mismatch."""
+    from a2ts.diarizer import load_segment_embeddings, save_segment_embeddings
+
+    prefix = tmp_path / "test_seg"
+    mat = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    indices = [0, 1]
+
+    save_segment_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=indices,
+        media_hash="hash1",
+        transcript_provenance_hash="trans_v1",
+    )
+
+    # Expected count mismatch
+    assert (
+        load_segment_embeddings(
+            prefix,
+            media_hash="hash1",
+            expected_count=3,
+        )
+        is None
+    )
+
+    # Corrupted file on disk: matrix has 1 row but provenance says count=2
+    np.save(
+        f"{prefix}_segment_embeddings.npy", np.array([[1.0, 0.0]], dtype=np.float32)
+    )
+    assert load_segment_embeddings(prefix, media_hash="hash1") is None
+
+
+def test_turn_embeddings_diarization_provenance_invalidation(tmp_path: Path) -> None:
+    """load_turn_embeddings validates diarization_provenance_hash, count, and returns None on mismatch."""
+    from a2ts.diarizer import load_turn_embeddings, save_turn_embeddings
+
+    prefix = tmp_path / "test_turn"
+    mat = np.array([[1.0, 0.0]], dtype=np.float32)
+    indices = [0]
+
+    save_turn_embeddings(
+        prefix,
+        emb_matrix=mat,
+        valid_indices=indices,
+        media_hash="media1",
+        diarization_provenance_hash="diar_v1",
+    )
+
+    # Matching diarization hash loads
+    loaded = load_turn_embeddings(
+        prefix,
+        media_hash="media1",
+        expected_diarization_provenance_hash="diar_v1",
+    )
+    assert loaded is not None
+    loaded_mat, loaded_indices = loaded
+    assert np.allclose(loaded_mat, mat)
+    assert loaded_indices == indices
+
+    # Mismatched diarization hash returns None
+    assert (
+        load_turn_embeddings(
+            prefix,
+            media_hash="media1",
+            expected_diarization_provenance_hash="diar_v2",
+        )
+        is None
+    )
+
+    # Missing provenance returns None
+    Path(f"{prefix}_turn_embeddings_provenance.json").unlink()
+    assert load_turn_embeddings(prefix, media_hash="media1") is None
+
+
+def test_extract_embeddings_for_segments_invalidated_by_transcript_hash(
+    tmp_path: Path,
+) -> None:
+    """extract_embeddings_for_segments re-extracts when transcript_provenance_hash changes."""
+    segments = [RawSegment(id=0, start=0.0, end=1.0, text="One")]
+    audio_path = tmp_path / "test.wav"
+    audio_path.touch()
+    cache_prefix = tmp_path / "prov_test"
+
+    with (
+        patch(
+            "soundfile.read", return_value=(np.zeros(32000, dtype=np.float32), 16000)
+        ),
+        patch("a2ts.diarizer.get_embedding_model") as mock_model,
+    ):
+        mock_classifier = MagicMock()
+        mock_classifier.encode_batch.side_effect = [
+            torch.tensor([[1.0, 0.0]]),
+            torch.tensor([[0.0, 1.0]]),
+        ]
+        mock_model.return_value = mock_classifier
+
+        # First extraction with prompt v1
+        emb1, _ = extract_embeddings_for_segments(
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            media_hash="m1",
+            transcript_provenance_hash="prompt_v1",
+        )
+        assert mock_model.call_count == 1
+        assert np.allclose(emb1, [[1.0, 0.0]])
+
+        # Second call with same prompt hash should hit cache (no model call)
+        emb2, _ = extract_embeddings_for_segments(
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            media_hash="m1",
+            transcript_provenance_hash="prompt_v1",
+        )
+        assert mock_model.call_count == 1
+        assert np.allclose(emb2, [[1.0, 0.0]])
+
+        # Third call with prompt v2 should miss cache and call model again
+        emb3, _ = extract_embeddings_for_segments(
+            audio_path,
+            segments,
+            device="cpu",
+            cache_prefix=cache_prefix,
+            media_hash="m1",
+            transcript_provenance_hash="prompt_v2",
+        )
+        assert mock_model.call_count == 2
+        assert np.allclose(emb3, [[0.0, 1.0]])
+
+
+def test_cli_review_rejects_foreign_turn_embeddings_glob(tmp_path: Path) -> None:
+    """Verify CLI review does not glob turn embeddings from another session."""
+    runner = CliRunner()
+    session_dir = tmp_path / "session_1"
+    session_dir.mkdir(parents=True)
+    media_hash = "session1_hash"
+
+    session_meta = SessionMetadata(
+        media_path="/tmp/fake.wav",
+        media_hash=media_hash,
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="base",
+        prompt_hash="nohash",
+        time_slice_minutes=15.0,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    (session_dir / "session.json").write_text(
+        session_meta.model_dump_json(), encoding="utf-8"
+    )
+
+    turns = [
+        {
+            "turn_id": 0,
+            "start": 0.0,
+            "end": 1.0,
+            "speaker": "SPEAKER_00",
+            "cluster_id": "SPEAKER_00",
+            "text": "hello",
+        }
+    ]
+    (session_dir / "turns.json").write_text(json.dumps(turns), encoding="utf-8")
+
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+    # Create foreign session turn embeddings
+    foreign_hash = "foreign_session_hash"
+    np.save(
+        diar_dir / f"{foreign_hash}_turn_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    (diar_dir / f"{foreign_hash}_turn_indices.json").write_text("[0]", encoding="utf-8")
+
+    vp_file = tmp_path / "voice_profiles.json"
+    vp_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "speakers": {
+                    "Alice": {
+                        "speaker_name": "Alice",
+                        "centroid": [1.0, 0.0],
+                        "sample_count": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch("a2ts.cli.classify_clusters_to_profiles") as mock_classify,
+        patch("a2ts.cli.run_interactive_review", return_value=SpeakersMapping()),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--voice-profiles",
+                str(vp_file),
+                "--output",
+                str(tmp_path / "out.md"),
+            ],
+        )
+        assert result.exit_code == 0
+        # classify_clusters_to_profiles MUST NOT be called with foreign embeddings
+        mock_classify.assert_not_called()
+
+
+def test_cli_recluster_rejects_foreign_segment_embeddings_glob(tmp_path: Path) -> None:
+    """Verify CLI recluster does not glob segment embeddings from another session."""
+    runner = CliRunner()
+    session_dir = tmp_path / "session_1"
+    session_dir.mkdir(parents=True)
+    media_hash = "session1_hash"
+
+    session_meta = SessionMetadata(
+        media_path="/tmp/fake.wav",
+        media_hash=media_hash,
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="base",
+        prompt_hash="nohash",
+        time_slice_minutes=15.0,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    (session_dir / "session.json").write_text(
+        session_meta.model_dump_json(), encoding="utf-8"
+    )
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    seg = RawSegment(id=0, start=0.0, end=1.0, text="hello")
+    (transcripts_dir / f"{media_hash}_whisper.json").write_text(
+        json.dumps([seg.model_dump()]), encoding="utf-8"
+    )
+
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+    # Create foreign session segment embeddings
+    foreign_hash = "foreign_session_hash"
+    np.save(
+        diar_dir / f"{foreign_hash}_segment_embeddings.npy",
+        np.array([[1.0, 0.0]], dtype=np.float32),
+    )
+    (diar_dir / f"{foreign_hash}_segment_indices.json").write_text(
+        "[0]", encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "recluster",
+            str(session_dir),
+            "--output",
+            str(tmp_path / "out.md"),
+        ],
+    )
+    assert result.exit_code != 0
+    # Must indicate embeddings cache not found (did not glob foreign file)
+    assert "Embeddings cache not found" in result.output

@@ -184,6 +184,255 @@ def get_embedding_model(device: str = "cuda") -> Any:
     return _CLASSIFIER
 
 
+def compute_entity_fingerprint(
+    entities: Sequence[RawSegment | SpeakerTurn | AlignedTurn],
+) -> str:
+    """Compute deterministic SHA-256 fingerprint from entity IDs and time intervals."""
+    import hashlib
+
+    parts: list[str] = []
+    for idx, e in enumerate(entities):
+        eid = getattr(e, "turn_id", getattr(e, "id", idx))
+        parts.append(f"{eid}:{e.start:.3f}:{e.end:.3f}")
+    return hashlib.sha256(";".join(parts).encode("utf-8")).hexdigest()
+
+
+def save_segment_embeddings(
+    cache_prefix: Path | str,
+    emb_matrix: np.ndarray,
+    valid_indices: list[int],
+    media_hash: str,
+    transcript_provenance_hash: str | None = None,
+    entity_fingerprint: str | None = None,
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+    segments: Sequence[RawSegment] | None = None,
+) -> None:
+    """Save segment embeddings, indices, and provenance metadata atomically."""
+    cache_prefix_path = Path(cache_prefix)
+    if entity_fingerprint is None and segments is not None:
+        entity_fingerprint = compute_entity_fingerprint(segments)
+
+    emb_file = Path(f"{cache_prefix_path}_segment_embeddings.npy")
+    idx_file = Path(f"{cache_prefix_path}_segment_indices.json")
+    prov_file = Path(f"{cache_prefix_path}_segment_embeddings_provenance.json")
+
+    emb_file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(emb_file, emb_matrix)
+    atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash=media_hash,
+        embedding_model=embedding_model,
+        count=len(valid_indices),
+        transcript_provenance_hash=transcript_provenance_hash,
+        entity_fingerprint=entity_fingerprint,
+    )
+    atomic_write_text(prov_file, prov.model_dump_json(indent=2))
+
+
+def load_segment_embeddings(
+    cache_prefix: Path | str,
+    media_hash: str,
+    expected_transcript_provenance_hash: str | None = None,
+    expected_count: int | None = None,
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+) -> tuple[np.ndarray, list[int]] | None:
+    """Load cached segment embeddings and indices, strictly validating provenance."""
+    cache_prefix_path = Path(cache_prefix)
+    emb_file = Path(f"{cache_prefix_path}_segment_embeddings.npy")
+    idx_file = Path(f"{cache_prefix_path}_segment_indices.json")
+    prov_file = Path(f"{cache_prefix_path}_segment_embeddings_provenance.json")
+
+    if not emb_file.is_file() or not idx_file.is_file() or not prov_file.is_file():
+        return None
+
+    try:
+        prov = EmbeddingCacheProvenance.model_validate_json(
+            prov_file.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        logger.debug(
+            "Failed to validate segment embedding provenance %s: %s", prov_file, exc
+        )
+        return None
+
+    if prov.entity_kind != "segment":
+        logger.warning(
+            "Segment embedding cache provenance mismatch: expected 'segment', got '%s'",
+            prov.entity_kind,
+        )
+        return None
+    if prov.media_hash != media_hash:
+        logger.debug(
+            "Segment embedding media_hash mismatch: expected '%s', got '%s'",
+            media_hash,
+            prov.media_hash,
+        )
+        return None
+    if prov.embedding_model != embedding_model:
+        logger.debug(
+            "Segment embedding model mismatch: expected '%s', got '%s'",
+            embedding_model,
+            prov.embedding_model,
+        )
+        return None
+    if (
+        expected_transcript_provenance_hash is not None
+        and prov.transcript_provenance_hash != expected_transcript_provenance_hash
+    ):
+        logger.debug(
+            "Segment embedding transcript_provenance_hash mismatch: expected '%s', got '%s'",
+            expected_transcript_provenance_hash,
+            prov.transcript_provenance_hash,
+        )
+        return None
+    if expected_count is not None and prov.count != expected_count:
+        logger.debug(
+            "Segment embedding count mismatch: expected %d, got %d",
+            expected_count,
+            prov.count,
+        )
+        return None
+
+    try:
+        emb_matrix = np.load(emb_file)
+        valid_indices = [
+            int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+        ]
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.debug("Failed to read embedding cache %s: %s", emb_file, exc)
+        return None
+
+    if len(emb_matrix) != prov.count or len(valid_indices) != prov.count:
+        logger.warning(
+            "Segment embedding data size mismatch: provenance count=%d, matrix=%d, indices=%d",
+            prov.count,
+            len(emb_matrix),
+            len(valid_indices),
+        )
+        return None
+
+    return emb_matrix, valid_indices
+
+
+def save_turn_embeddings(
+    cache_prefix: Path | str,
+    emb_matrix: np.ndarray,
+    valid_indices: list[int],
+    media_hash: str,
+    diarization_provenance_hash: str | None = None,
+    entity_fingerprint: str | None = None,
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+    turns: Sequence[SpeakerTurn | AlignedTurn] | None = None,
+) -> None:
+    """Save turn embeddings, indices, and provenance metadata atomically."""
+    cache_prefix_path = Path(cache_prefix)
+    if entity_fingerprint is None and turns is not None:
+        entity_fingerprint = compute_entity_fingerprint(turns)
+
+    emb_file = Path(f"{cache_prefix_path}_turn_embeddings.npy")
+    idx_file = Path(f"{cache_prefix_path}_turn_indices.json")
+    prov_file = Path(f"{cache_prefix_path}_turn_embeddings_provenance.json")
+
+    emb_file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(emb_file, emb_matrix)
+    atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash=media_hash,
+        embedding_model=embedding_model,
+        count=len(valid_indices),
+        diarization_provenance_hash=diarization_provenance_hash,
+        entity_fingerprint=entity_fingerprint,
+    )
+    atomic_write_text(prov_file, prov.model_dump_json(indent=2))
+
+
+def load_turn_embeddings(
+    cache_prefix: Path | str,
+    media_hash: str,
+    expected_diarization_provenance_hash: str | None = None,
+    expected_count: int | None = None,
+    embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb",
+) -> tuple[np.ndarray, list[int]] | None:
+    """Load cached turn embeddings and indices, strictly validating provenance."""
+    cache_prefix_path = Path(cache_prefix)
+    emb_file = Path(f"{cache_prefix_path}_turn_embeddings.npy")
+    idx_file = Path(f"{cache_prefix_path}_turn_indices.json")
+    prov_file = Path(f"{cache_prefix_path}_turn_embeddings_provenance.json")
+
+    if not emb_file.is_file() or not idx_file.is_file() or not prov_file.is_file():
+        return None
+
+    try:
+        prov = EmbeddingCacheProvenance.model_validate_json(
+            prov_file.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        logger.debug(
+            "Failed to validate turn embedding provenance %s: %s", prov_file, exc
+        )
+        return None
+
+    if prov.entity_kind != "turn":
+        logger.warning(
+            "Turn embedding cache provenance mismatch: expected 'turn', got '%s'",
+            prov.entity_kind,
+        )
+        return None
+    if prov.media_hash != media_hash:
+        logger.debug(
+            "Turn embedding media_hash mismatch: expected '%s', got '%s'",
+            media_hash,
+            prov.media_hash,
+        )
+        return None
+    if prov.embedding_model != embedding_model:
+        logger.debug(
+            "Turn embedding model mismatch: expected '%s', got '%s'",
+            embedding_model,
+            prov.embedding_model,
+        )
+        return None
+    if (
+        expected_diarization_provenance_hash is not None
+        and prov.diarization_provenance_hash != expected_diarization_provenance_hash
+    ):
+        logger.debug(
+            "Turn embedding diarization_provenance_hash mismatch: expected '%s', got '%s'",
+            expected_diarization_provenance_hash,
+            prov.diarization_provenance_hash,
+        )
+        return None
+    if expected_count is not None and prov.count != expected_count:
+        logger.debug(
+            "Turn embedding count mismatch: expected %d, got %d",
+            expected_count,
+            prov.count,
+        )
+        return None
+
+    try:
+        emb_matrix = np.load(emb_file)
+        valid_indices = [
+            int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
+        ]
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.debug("Failed to read turn embedding cache %s: %s", emb_file, exc)
+        return None
+
+    if len(emb_matrix) != prov.count or len(valid_indices) != prov.count:
+        logger.warning(
+            "Turn embedding data size mismatch: provenance count=%d, matrix=%d, indices=%d",
+            prov.count,
+            len(emb_matrix),
+            len(valid_indices),
+        )
+        return None
+
+    return emb_matrix, valid_indices
+
+
 def extract_embeddings_for_segments(
     audio_path: Path,
     segments: list[RawSegment],
@@ -191,49 +440,21 @@ def extract_embeddings_for_segments(
     cache_prefix: Path | None = None,
     force: bool = False,
     media_hash: str = "",
+    transcript_provenance_hash: str | None = None,
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speech segments."""
+    resolved_media_hash = media_hash or (cache_prefix.name if cache_prefix else "")
     if cache_prefix is not None and not force:
-        emb_file = Path(f"{cache_prefix}_segment_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_segment_indices.json")
-        prov_file = Path(f"{cache_prefix}_segment_embeddings_provenance.json")
-        if emb_file.is_file() and idx_file.is_file():
-            valid = True
-            if prov_file.is_file():
-                try:
-                    prov = EmbeddingCacheProvenance.model_validate_json(
-                        prov_file.read_text(encoding="utf-8")
-                    )
-                    if prov.entity_kind != "segment":
-                        logger.warning(
-                            "Segment embedding cache provenance mismatch: expected 'segment', got '%s'",
-                            prov.entity_kind,
-                        )
-                        valid = False
-                except (
-                    OSError,
-                    ValueError,
-                    ValidationError,
-                    json.JSONDecodeError,
-                ) as exc:
-                    logger.debug(
-                        "Failed to validate segment embedding cache provenance %s: %s",
-                        prov_file,
-                        exc,
-                    )
-                    valid = False
-            if valid:
-                console.print(
-                    f"[bold cyan]Loading cached embeddings from {emb_file}...[/bold cyan]"
-                )
-                try:
-                    emb_matrix = np.load(emb_file)
-                    cached_indices = [
-                        int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
-                    ]
-                    return emb_matrix, cached_indices
-                except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    logger.debug("Failed to read embedding cache %s: %s", emb_file, exc)
+        cached = load_segment_embeddings(
+            cache_prefix=cache_prefix,
+            media_hash=resolved_media_hash,
+            expected_transcript_provenance_hash=transcript_provenance_hash,
+        )
+        if cached is not None:
+            console.print(
+                f"[bold cyan]Loading cached embeddings from {cache_prefix}_segment_embeddings.npy...[/bold cyan]"
+            )
+            return cached
 
     if not segments:
         return np.empty((0, 0), dtype=np.float32), []
@@ -288,19 +509,14 @@ def extract_embeddings_for_segments(
     emb_matrix = emb_matrix / norms
 
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_segment_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_segment_indices.json")
-        prov_file = Path(f"{cache_prefix}_segment_embeddings_provenance.json")
-        emb_file.parent.mkdir(parents=True, exist_ok=True)
-        np.save(emb_file, emb_matrix)
-        atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
-        resolved_media_hash = media_hash or cache_prefix.name
-        prov = EmbeddingCacheProvenance(
-            entity_kind="segment",
+        save_segment_embeddings(
+            cache_prefix=cache_prefix,
+            emb_matrix=emb_matrix,
+            valid_indices=valid_indices,
             media_hash=resolved_media_hash,
-            count=len(valid_indices),
+            transcript_provenance_hash=transcript_provenance_hash,
+            segments=segments,
         )
-        atomic_write_text(prov_file, prov.model_dump_json(indent=2))
 
     return emb_matrix, valid_indices
 
@@ -315,51 +531,21 @@ def extract_embeddings_for_turns(
     cache_prefix: Path | None = None,
     force: bool = False,
     media_hash: str = "",
+    diarization_provenance_hash: str | None = None,
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speaker turns using ECAPA-TDNN."""
+    resolved_media_hash = media_hash or (cache_prefix.name if cache_prefix else "")
     if cache_prefix is not None and not force:
-        emb_file = Path(f"{cache_prefix}_turn_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_turn_indices.json")
-        prov_file = Path(f"{cache_prefix}_turn_embeddings_provenance.json")
-        if emb_file.is_file() and idx_file.is_file():
-            valid = True
-            if prov_file.is_file():
-                try:
-                    prov = EmbeddingCacheProvenance.model_validate_json(
-                        prov_file.read_text(encoding="utf-8")
-                    )
-                    if prov.entity_kind != "turn":
-                        logger.warning(
-                            "Turn embedding cache provenance mismatch: expected 'turn', got '%s'",
-                            prov.entity_kind,
-                        )
-                        valid = False
-                except (
-                    OSError,
-                    ValueError,
-                    ValidationError,
-                    json.JSONDecodeError,
-                ) as exc:
-                    logger.debug(
-                        "Failed to validate turn embedding cache provenance %s: %s",
-                        prov_file,
-                        exc,
-                    )
-                    valid = False
-            if valid:
-                console.print(
-                    f"[bold cyan]Loading cached turn embeddings from {emb_file}...[/bold cyan]"
-                )
-                try:
-                    emb_matrix = np.load(emb_file)
-                    cached_indices = [
-                        int(x) for x in json.loads(idx_file.read_text(encoding="utf-8"))
-                    ]
-                    return emb_matrix, cached_indices
-                except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    logger.debug(
-                        "Failed to read turn embedding cache %s: %s", emb_file, exc
-                    )
+        cached = load_turn_embeddings(
+            cache_prefix=cache_prefix,
+            media_hash=resolved_media_hash,
+            expected_diarization_provenance_hash=diarization_provenance_hash,
+        )
+        if cached is not None:
+            console.print(
+                f"[bold cyan]Loading cached turn embeddings from {cache_prefix}_turn_embeddings.npy...[/bold cyan]"
+            )
+            return cached
 
     if not turns:
         return np.empty((0, 0), dtype=np.float32), []
@@ -413,19 +599,14 @@ def extract_embeddings_for_turns(
     emb_matrix = emb_matrix / norms
 
     if cache_prefix is not None:
-        emb_file = Path(f"{cache_prefix}_turn_embeddings.npy")
-        idx_file = Path(f"{cache_prefix}_turn_indices.json")
-        prov_file = Path(f"{cache_prefix}_turn_embeddings_provenance.json")
-        emb_file.parent.mkdir(parents=True, exist_ok=True)
-        np.save(emb_file, emb_matrix)
-        atomic_write_text(idx_file, json.dumps(valid_indices, indent=2))
-        resolved_media_hash = media_hash or cache_prefix.name
-        prov = EmbeddingCacheProvenance(
-            entity_kind="turn",
+        save_turn_embeddings(
+            cache_prefix=cache_prefix,
+            emb_matrix=emb_matrix,
+            valid_indices=valid_indices,
             media_hash=resolved_media_hash,
-            count=len(valid_indices),
+            diarization_provenance_hash=diarization_provenance_hash,
+            turns=turns,
         )
-        atomic_write_text(prov_file, prov.model_dump_json(indent=2))
 
     return emb_matrix, valid_indices
 
@@ -535,6 +716,9 @@ def diarize_segments(
         cache_prefix=embeddings_cache_prefix,
         force=force,
         media_hash=provenance.media_hash if provenance else "",
+        transcript_provenance_hash=provenance.transcript_provenance_hash
+        if provenance
+        else None,
     )
 
     if len(valid_indices) == 0:

@@ -36,6 +36,8 @@ from a2ts.diarizer import (
     compute_voice_profiles,
     diarize_segments,
     extract_embeddings_for_turns,
+    load_segment_embeddings,
+    load_turn_embeddings,
     load_voice_profiles,
     propagate_speaker_labels,
     save_voice_profiles,
@@ -442,35 +444,41 @@ def run(
     loaded_db: VoiceProfilesDatabase | None = None
     if voice_profiles.is_file() and diarize:
         loaded_db = load_voice_profiles(voice_profiles)
-        embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
-        indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
+        diar_prov_hash = diar_prov.compute_hash()
+        turn_embs: tuple[np.ndarray, list[int]] | None = None
+        if not force:
+            turn_embs = load_turn_embeddings(
+                cache_prefix=diarization_dir / file_hash,
+                media_hash=file_hash,
+                expected_count=len(speaker_turns),
+            )
+
         if (
             loaded_db
             and loaded_db.speakers
-            and (not embeddings_npy.is_file() or not indices_json.is_file() or force)
+            and turn_embs is None
             and speaker_turns
             and audio_path.is_file()
         ):
-            extract_embeddings_for_turns(
+            turn_embs = extract_embeddings_for_turns(
                 audio_path=audio_path,
                 turns=speaker_turns,
                 device=device,
                 cache_prefix=diarization_dir / file_hash,
                 force=force,
+                media_hash=file_hash,
+                diarization_provenance_hash=diar_prov_hash,
             )
-            embeddings_npy = diarization_dir / f"{file_hash}_turn_embeddings.npy"
-            indices_json = diarization_dir / f"{file_hash}_turn_indices.json"
         if (
             loaded_db
             and loaded_db.speakers
-            and embeddings_npy.is_file()
-            and indices_json.is_file()
+            and turn_embs is not None
+            and isinstance(turn_embs, tuple)
+            and len(turn_embs) == 2
+            and isinstance(turn_embs[0], np.ndarray)
         ):
             try:
-                emb_matrix = np.load(embeddings_npy)
-                valid_indices = [
-                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-                ]
+                emb_matrix, valid_indices = turn_embs
                 if len(emb_matrix) > 0 and len(valid_indices) > 0:
                     seg_to_cluster = {
                         turn.id: turn.cluster_id for turn in speaker_turns
@@ -782,39 +790,25 @@ def review(
     diarization_dir = session_dir / "diarization"
     if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
         diarization_dir = cache_root / "diarization"
-    embeddings_npy: Path | None = None
-    indices_json: Path | None = None
+
+    turn_embs: tuple[np.ndarray, list[int]] | None = None
     if media_hash:
-        e_path = diarization_dir / f"{media_hash}_turn_embeddings.npy"
-        i_path = diarization_dir / f"{media_hash}_turn_indices.json"
-        if e_path.is_file() and i_path.is_file():
-            embeddings_npy = e_path
-            indices_json = i_path
-    if embeddings_npy is None and diarization_dir.is_dir():
-        for e_file in sorted(diarization_dir.glob("*_turn_embeddings.npy")):
-            prefix = e_file.name.removesuffix("_turn_embeddings.npy")
-            i_file = diarization_dir / f"{prefix}_turn_indices.json"
-            if i_file.is_file():
-                embeddings_npy = e_file
-                indices_json = i_file
-                break
+        turn_embs = load_turn_embeddings(
+            cache_prefix=diarization_dir / media_hash,
+            media_hash=media_hash,
+        )
+    if turn_embs is None:
+        console.print(
+            f"[yellow]Warning: Turn embeddings not found or invalid provenance for media hash '{media_hash}'. "
+            "Skipping voice profile matching.[/yellow]"
+        )
 
     loaded_vp: VoiceProfilesDatabase | None = None
     if voice_profiles.is_file():
         loaded_vp = load_voice_profiles(voice_profiles)
-        if (
-            loaded_vp
-            and loaded_vp.speakers
-            and embeddings_npy
-            and indices_json
-            and embeddings_npy.is_file()
-            and indices_json.is_file()
-        ):
+        if loaded_vp and loaded_vp.speakers and turn_embs is not None:
             try:
-                embeddings = np.load(embeddings_npy)
-                valid_indices = [
-                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-                ]
+                embeddings, valid_indices = turn_embs
                 turn_by_id = {t.turn_id: t for t in turns}
                 cluster_embs: dict[str, list[np.ndarray]] = {}
                 for idx_emb, tid in enumerate(valid_indices):
@@ -889,13 +883,7 @@ def review(
     aligned_turns = apply_speakers_mapping(turns, mapping)
 
     # Auto-enroll / update voice profiles if cached embeddings exist
-    if (
-        not closed_set
-        and embeddings_npy
-        and indices_json
-        and embeddings_npy.is_file()
-        and indices_json.is_file()
-    ):
+    if not closed_set and turn_embs is not None:
         has_manual_speakers = any(
             not v.startswith("SPEAKER_")
             for cid, v in mapping.cluster_defaults.items()
@@ -903,10 +891,7 @@ def review(
         )
         if has_manual_speakers:
             try:
-                embeddings = np.load(embeddings_npy)
-                valid_indices = [
-                    int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-                ]
+                embeddings, valid_indices = turn_embs
                 loaded_db = (
                     load_voice_profiles(voice_profiles)
                     if voice_profiles.is_file()
@@ -1094,34 +1079,29 @@ def recluster(
     diarization_dir = session_dir / "diarization"
     if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
         diarization_dir = cache_root / "diarization"
-    embeddings_npy = diarization_dir / f"{media_hash}_segment_embeddings.npy"
-    indices_json = diarization_dir / f"{media_hash}_segment_indices.json"
 
-    if not (embeddings_npy.is_file() and indices_json.is_file()):
-        found = False
-        if diarization_dir.is_dir():
-            for e_file in sorted(diarization_dir.glob("*_segment_embeddings.npy")):
-                prefix = e_file.name.removesuffix("_segment_embeddings.npy")
-                i_file = diarization_dir / f"{prefix}_segment_indices.json"
-                if i_file.is_file():
-                    embeddings_npy = e_file
-                    indices_json = i_file
-                    found = True
-                    break
-        if not found:
-            console.print(
-                f"[bold red]Embeddings cache not found at {embeddings_npy}[/bold red]"
+    expected_trans_hash: str | None = None
+    if isinstance(cache_data, dict) and "provenance" in cache_data:
+        try:
+            trans_prov = TranscriptCacheProvenance.model_validate(
+                cache_data["provenance"]
             )
-            raise typer.Exit(code=1)
+            expected_trans_hash = trans_prov.compute_hash()
+        except (ValueError, KeyError, OSError):
+            expected_trans_hash = None
 
-    try:
-        emb_matrix = np.load(embeddings_npy)
-        valid_indices = [
-            int(x) for x in json.loads(indices_json.read_text(encoding="utf-8"))
-        ]
-    except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
-        console.print(f"[bold red]Failed to load embeddings: {exc}[/bold red]")
+    seg_embs = load_segment_embeddings(
+        cache_prefix=diarization_dir / media_hash,
+        media_hash=media_hash,
+        expected_transcript_provenance_hash=expected_trans_hash,
+    )
+    if seg_embs is None:
+        console.print(
+            f"[bold red]Embeddings cache not found at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}[/bold red]"
+        )
         raise typer.Exit(code=1)
+
+    emb_matrix, valid_indices = seg_embs
 
     t_start = time.perf_counter()
 

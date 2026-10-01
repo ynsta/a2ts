@@ -147,6 +147,13 @@ class DiarizationCacheProvenance(BaseModel):
     transcript_provenance_hash: str | None = None
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
+    def compute_hash(self) -> str:
+        """Compute deterministic SHA-256 digest of settings (excluding created_at)."""
+        import hashlib
+
+        payload = self.model_dump_json(exclude={"created_at"}).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
 
 class DiarizationCacheFile(BaseModel):
     """Versioned storage file for acoustic diarization speaker turns."""
@@ -196,3 +203,6 @@ class EmbeddingCacheProvenance(BaseModel):
     embedding_model: str = "speechbrain/spkrec-ecapa-voxceleb"
     count: int
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    transcript_provenance_hash: str | None = None
+    diarization_provenance_hash: str | None = None
+    entity_fingerprint: str | None = None

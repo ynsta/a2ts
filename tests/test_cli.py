@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from a2ts.cli import app
 from a2ts.models import (
     AlignedTurn,
+    EmbeddingCacheProvenance,
     RawSegment,
     SpeakersMapping,
     SpeakerTurn,
@@ -527,6 +528,14 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
     emb[0, 0] = 1.0
     np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
     (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash="abc1234",
+        count=1,
+    )
+    (diar_dir / "abc1234_turn_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     captured_mapping: list[SpeakersMapping] = []
 
@@ -624,6 +633,14 @@ def test_review_with_voice_profiles(tmp_path: Path) -> None:
     emb[0, 0] = 1.0
     np.save(diar_dir / "hash5678_turn_embeddings.npy", emb)
     (diar_dir / "hash5678_turn_indices.json").write_text("[0]", encoding="utf-8")
+    prov = EmbeddingCacheProvenance(
+        entity_kind="turn",
+        media_hash="hash5678",
+        count=1,
+    )
+    (diar_dir / "hash5678_turn_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     with (
         patch(
@@ -691,6 +708,14 @@ def test_recluster_command(tmp_path: Path) -> None:
         np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
     )
     (diar_dir / "hash123_segment_indices.json").write_text("[0, 1]", encoding="utf-8")
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash="hash123",
+        count=2,
+    )
+    (diar_dir / "hash123_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
 
     # Create speakers mapping with custom name
     mapping = SpeakersMapping(cluster_defaults={"SPEAKER_00": "Valeros"})
@@ -879,6 +904,14 @@ def test_recluster_with_closed_set_and_voice_profiles(tmp_path: Path) -> None:
     )
     (diar_dir / "hash_closed_segment_indices.json").write_text(
         "[0, 1]", encoding="utf-8"
+    )
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash="hash_closed",
+        count=2,
+    )
+    (diar_dir / "hash_closed_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
     )
 
     # Create voice profiles with 2D matching centroids

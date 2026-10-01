@@ -12,6 +12,7 @@ from a2ts.diarizer import compute_voice_profiles
 from a2ts.models import (
     AlignedTurn,
     ClusterSplit,
+    EmbeddingCacheProvenance,
     SessionMetadata,
     SpeakersMapping,
     SpeakerTurn,
@@ -279,6 +280,14 @@ def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
     np.save(diar_dir / f"{media_hash}_segment_embeddings.npy", emb_matrix)
     (diar_dir / f"{media_hash}_segment_indices.json").write_text(
         json.dumps([0, 1, 2]), encoding="utf-8"
+    )
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash=media_hash,
+        count=3,
+    )
+    (diar_dir / f"{media_hash}_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
     )
 
     # Mapping with a split rule: SPEAKER_00 at 30s -> SPEAKER_SPLIT
