@@ -17,6 +17,7 @@ from a2ts.cache import (
     compute_prompt_hash,
     compute_transcript_provenance_hash,
     load_transcript_cache,
+    save_diarization_cache,
     save_transcript_cache,
 )
 from a2ts.consolidator import debounce_consecutive_turns, render_markdown_transcript
@@ -1080,6 +1081,31 @@ def recluster(
     if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
         diarization_dir = cache_root / "diarization"
 
+    # Check whether session used Nemotron
+    is_nemotron = False
+    if session_meta.engine == "nemotron":
+        is_nemotron = True
+    else:
+        diar_cache_file = diarization_dir / f"{media_hash}.json"
+        if diar_cache_file.is_file():
+            try:
+                diar_data = json.loads(diar_cache_file.read_text(encoding="utf-8"))
+                if isinstance(diar_data, dict) and "provenance" in diar_data:
+                    p_engine = diar_data["provenance"].get(
+                        "resolved_engine"
+                    ) or diar_data["provenance"].get("engine")
+                    if p_engine == "nemotron":
+                        is_nemotron = True
+            except (json.JSONDecodeError, OSError, ValueError, KeyError):
+                pass
+
+    if is_nemotron:
+        console.print(
+            "[bold red]Reclustering requires segment embeddings from ECAPA diarization; "
+            "sessions diarized with Nemotron cannot be reclustered[/bold red]"
+        )
+        raise typer.Exit(code=1)
+
     expected_trans_hash: str | None = None
     if isinstance(cache_data, dict) and "provenance" in cache_data:
         try:
@@ -1097,7 +1123,9 @@ def recluster(
     )
     if seg_embs is None:
         console.print(
-            f"[bold red]Embeddings cache not found at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}[/bold red]"
+            f"[bold red]Embeddings cache not found at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}. "
+            "Reclustering requires segment embeddings from ECAPA diarization; "
+            "sessions diarized with Nemotron cannot be reclustered[/bold red]"
         )
         raise typer.Exit(code=1)
 
@@ -1173,6 +1201,11 @@ def recluster(
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
+    # Clear stale cluster defaults and label sources because cluster boundaries and IDs have changed
+    mapping.cluster_defaults.clear()
+    mapping.label_sources.clear()
+    mapping.slice_overrides.clear()
+
     if mapping.splits:
         aligned_turns = apply_splits_to_turns(aligned_turns, mapping.splits)
 
@@ -1185,10 +1218,17 @@ def recluster(
     )
 
     diar_cache = diarization_dir / f"{media_hash}.json"
-    atomic_write_text(
-        diar_cache,
-        json.dumps([t.model_dump() for t in speaker_turns], indent=2),
+    diar_prov = DiarizationCacheProvenance(
+        media_hash=media_hash,
+        engine="ecapa",
+        resolved_engine="ecapa",
+        cluster_threshold=cluster_threshold,
+        num_speakers=num_speakers,
+        device="cuda",
+        transcript_provenance_hash=expected_trans_hash
+        or (session_meta.prompt_hash if session_meta.prompt_hash else None),
     )
+    save_diarization_cache(diar_cache, diar_prov, speaker_turns)
 
     if voice_profiles.is_file():
         loaded_db = load_voice_profiles(voice_profiles)

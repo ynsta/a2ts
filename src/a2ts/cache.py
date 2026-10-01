@@ -142,21 +142,45 @@ def load_diarization_cache(
             return None
         cached = DiarizationCacheFile.model_validate(data)
         p = cached.provenance
-        if (
-            p.media_hash == expected_provenance.media_hash
-            and p.engine == expected_provenance.engine
-            and p.cluster_threshold == expected_provenance.cluster_threshold
-            and p.num_speakers == expected_provenance.num_speakers
-            and p.device == expected_provenance.device
-            and (
+        if expected_provenance.engine == "auto":
+            if expected_provenance.resolved_engine == "ecapa":
+                engine_matches = p.resolved_engine == "ecapa" or p.engine == "ecapa"
+            else:
+                engine_matches = (
+                    p.engine == "auto"
+                    or p.resolved_engine in ("nemotron", "ecapa")
+                    or p.engine in ("nemotron", "ecapa")
+                )
+        else:
+            engine_matches = (
+                p.engine == expected_provenance.engine
+                or p.resolved_engine == expected_provenance.engine
+            ) and (
                 expected_provenance.resolved_engine is None
                 or p.resolved_engine == expected_provenance.resolved_engine
             )
-            and (
-                expected_provenance.transcript_provenance_hash is None
-                or p.transcript_provenance_hash
-                == expected_provenance.transcript_provenance_hash
-            )
+
+        clusters_match = (
+            p.cluster_threshold == expected_provenance.cluster_threshold
+            and p.num_speakers == expected_provenance.num_speakers
+        )
+        device_matches = (
+            expected_provenance.device == "auto"
+            or p.device == "auto"
+            or p.device == expected_provenance.device
+        )
+        transcript_matches = (
+            expected_provenance.transcript_provenance_hash is None
+            or p.transcript_provenance_hash
+            == expected_provenance.transcript_provenance_hash
+        )
+
+        if (
+            p.media_hash == expected_provenance.media_hash
+            and engine_matches
+            and clusters_match
+            and device_matches
+            and transcript_matches
         ):
             return cached.turns
         return None

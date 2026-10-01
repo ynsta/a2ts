@@ -238,3 +238,52 @@ def test_atomic_save_numpy_cleanup_on_error(
 
     assert not target_file.exists()
     assert list(tmp_path.glob(".*.tmp*")) == []
+
+
+def test_load_diarization_cache_auto_engine_accepts_fallback_cache(
+    tmp_path: Path,
+) -> None:
+    cache_path = tmp_path / "diarization" / "test_fallback.json"
+    saved_prov = DiarizationCacheProvenance(
+        media_hash="hash_fallback",
+        engine="auto",
+        resolved_engine="ecapa",
+        cluster_threshold=0.60,
+        num_speakers=2,
+        device="cuda",
+        transcript_provenance_hash="trans_prov_hash_123",
+    )
+    turns = [
+        SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00"),
+        SpeakerTurn(id=1, start=2.5, end=4.0, cluster_id="SPEAKER_01"),
+    ]
+    save_diarization_cache(cache_path, saved_prov, turns)
+    assert cache_path.is_file()
+
+    # Expected provenance with engine="auto" and resolved_engine="nemotron" (e.g. guessed by CLI)
+    expected_prov = DiarizationCacheProvenance(
+        media_hash="hash_fallback",
+        engine="auto",
+        resolved_engine="nemotron",
+        cluster_threshold=0.60,
+        num_speakers=2,
+        device="cuda",
+        transcript_provenance_hash="trans_prov_hash_123",
+    )
+
+    loaded = load_diarization_cache(cache_path, expected_prov)
+    assert loaded is not None
+    assert len(loaded) == 2
+    assert loaded[0].cluster_id == "SPEAKER_00"
+
+    # Mismatched transcript hash should invalidate
+    expected_prov_diff_trans = expected_prov.model_copy(
+        update={"transcript_provenance_hash": "different_trans_hash"}
+    )
+    assert load_diarization_cache(cache_path, expected_prov_diff_trans) is None
+
+    # Mismatched cluster threshold should invalidate
+    expected_prov_diff_thresh = expected_prov.model_copy(
+        update={"cluster_threshold": 0.40}
+    )
+    assert load_diarization_cache(cache_path, expected_prov_diff_thresh) is None

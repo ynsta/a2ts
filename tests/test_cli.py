@@ -771,9 +771,153 @@ def test_recluster_command(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert (tmp_path / "recluster_out.md").is_file()
     assert (session_dir / "turns.json").is_file()
-    content = (tmp_path / "recluster_out.md").read_text(encoding="utf-8")
-    assert "Valeros" in content
     assert "✓ Re-clustered into" in result.output
+
+    # Check diarization cache file has provenance and turns
+    diar_cache = diar_dir / "hash123.json"
+    assert diar_cache.is_file()
+    from a2ts.models import DiarizationCacheFile
+
+    cache_file = DiarizationCacheFile.model_validate_json(
+        diar_cache.read_text(encoding="utf-8")
+    )
+    assert cache_file.provenance.engine == "ecapa"
+    assert cache_file.provenance.resolved_engine == "ecapa"
+    assert cache_file.provenance.cluster_threshold == 0.70
+    assert len(cache_file.turns) == 2
+
+
+def test_recluster_resets_stale_cluster_defaults(tmp_path: Path) -> None:
+    """Test that a2ts recluster resets stale cluster_defaults in speakers_mapping.json."""
+    import numpy as np
+
+    from a2ts.models import RawSegment, SessionMetadata, SpeakersMapping
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash_stale",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "recluster_out.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    raw_segs = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Turn 1", words=[]),
+        RawSegment(id=1, start=1.5, end=2.5, text="Turn 2", words=[]),
+    ]
+    (transcripts_dir / "hash_stale_whisper.json").write_text(
+        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+    )
+
+    np.save(
+        diar_dir / "hash_stale_segment_embeddings.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+    (diar_dir / "hash_stale_segment_indices.json").write_text(
+        "[0, 1]", encoding="utf-8"
+    )
+    prov = EmbeddingCacheProvenance(
+        entity_kind="segment",
+        media_hash="hash_stale",
+        count=2,
+    )
+    (diar_dir / "hash_stale_segment_embeddings_provenance.json").write_text(
+        prov.model_dump_json(), encoding="utf-8"
+    )
+
+    # Create mapping with stale cluster_defaults
+    mapping = SpeakersMapping(
+        cluster_defaults={"SPEAKER_00": "Valeros", "SPEAKER_01": "Merisiel"},
+        label_sources={"SPEAKER_00": "manual", "SPEAKER_01": "manual"},
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        mapping.model_dump_json(), encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "recluster",
+            str(session_dir),
+            "--cluster-threshold",
+            "0.70",
+            "--output",
+            str(tmp_path / "recluster_out.md"),
+        ],
+    )
+    assert result.exit_code == 0
+
+    # Ensure stale cluster_defaults and label_sources were reset
+    updated_mapping = SpeakersMapping.model_validate_json(
+        (session_dir / "speakers_mapping.json").read_text(encoding="utf-8")
+    )
+    assert "SPEAKER_00" not in updated_mapping.cluster_defaults
+    assert "SPEAKER_01" not in updated_mapping.cluster_defaults
+    assert len(updated_mapping.cluster_defaults) == 0
+    assert len(updated_mapping.label_sources) == 0
+
+    content = (tmp_path / "recluster_out.md").read_text(encoding="utf-8")
+    assert "Valeros" not in content
+    assert "Merisiel" not in content
+
+
+def test_recluster_fails_cleanly_on_nemotron_session(tmp_path: Path) -> None:
+    """Test that a2ts recluster fails cleanly with an informative error when session used Nemotron."""
+    from a2ts.cache import save_diarization_cache
+    from a2ts.models import DiarizationCacheProvenance, RawSegment, SessionMetadata
+
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir()
+    diar_dir = session_dir / "diarization"
+    diar_dir.mkdir()
+
+    meta = SessionMetadata(
+        media_path=str(tmp_path / "media.mp3"),
+        media_hash="hash_nemo",
+        duration_seconds=10.0,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="",
+        time_slice_minutes=15.0,
+        created_at="2026-09-22T00:00:00Z",
+        output_path=str(tmp_path / "out.md"),
+    )
+    (session_dir / "session.json").write_text(meta.model_dump_json(), encoding="utf-8")
+
+    transcripts_dir = session_dir / "transcripts"
+    transcripts_dir.mkdir()
+    raw_segs = [RawSegment(id=0, start=0.0, end=1.0, text="Turn 1", words=[])]
+    (transcripts_dir / "hash_nemo_whisper.json").write_text(
+        json.dumps([s.model_dump() for s in raw_segs]), encoding="utf-8"
+    )
+
+    # Save diarization cache indicating Nemotron was used
+    prov = DiarizationCacheProvenance(
+        media_hash="hash_nemo",
+        engine="nemotron",
+        resolved_engine="nemotron",
+        cluster_threshold=0.60,
+    )
+    save_diarization_cache(diar_dir / "hash_nemo.json", prov, [])
+
+    result = runner.invoke(app, ["recluster", str(session_dir)])
+    assert result.exit_code == 1
+    assert (
+        "Reclustering requires segment embeddings from ECAPA diarization; sessions diarized with Nemotron cannot be reclustered"
+        in " ".join(result.output.split())
+    )
 
 
 def test_recluster_command_missing_session(tmp_path: Path) -> None:
