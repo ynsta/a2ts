@@ -35,13 +35,13 @@ def atomic_write_text(path: Path, content: str) -> None:
         tmp_path = Path(tmp_f.name)
         try:
             tmp_f.write(content)
-        except Exception:
+        except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise
 
     try:
         tmp_path.replace(path)
-    except Exception:
+    except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
 
@@ -61,7 +61,7 @@ def atomic_save_numpy(path: Path, arr: np.ndarray) -> None:
     try:
         np.save(tmp_path, arr)
         tmp_path.replace(path)
-    except Exception:
+    except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
 
