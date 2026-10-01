@@ -181,7 +181,7 @@ uv run a2ts recluster .a2ts/sessions/<media-sha256> \
 
 ## Documentation
 
-This project adheres to the **`isec-iagen-dev` Tier B** documentation standard:
+This project adheres to the **Tier B** documentation standard:
 
 - [**docs/spec.md**](docs/spec.md) — The WHAT: Formal specifications, CLI contracts, cache schemas, and invariants.
 - [**docs/design.md**](docs/design.md) — The HOW: System architecture, data flow diagrams, memory budgets, and module interactions.

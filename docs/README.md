@@ -2,7 +2,7 @@
 
 **Project**: `a2ts` (Audio to Text / Transcript)  
 **Governance Tier**: Tier B  
-**Documentation Model**: `isec-iagen-dev` Standard (Spec, Design, ADRs, Runbook, Codemap)
+**Documentation Model**: Standard Tier B (Spec, Design, ADRs, Runbook, Codemap)
 
 Welcome to the canonical documentation for `a2ts`. This directory serves as the **single source of truth** for all architectural, functional, operational, and design decisions of the project.
 

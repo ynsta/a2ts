@@ -92,7 +92,7 @@ We strictly practice invariant-driven, observable-behavior testing:
 
 ## 4. Documentation Standards
 
-This project adheres to the **`isec-iagen-dev` Tier B** documentation model.
+This project adheres to the **Tier B** documentation model.
 When modifying existing capabilities or adding new features:
 - Update canonical docs in the same change set: `docs/spec.md`, `docs/design.md`, `docs/codemap.md`, and `docs/runbook.md`.
 - Architectural choices and trade-offs require an Architectural Decision Record in `docs/adr/`.

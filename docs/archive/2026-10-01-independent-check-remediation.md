@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, Pydantic v2, Pytest, Ruff, Mypy, Faster-Whisper, SpeechBrain, CTranslate2, Typer, Rich.
 
-**Spec:** [docs/spec.md](../spec.md), [docs/design.md](../design.md), [a2ts-review-2026-10-01-codex-check.md](../../a2ts-review-2026-10-01-codex-check.md), [a2ts-review-2026-10-01-opus-check.md](../../a2ts-review-2026-10-01-opus-check.md).
+**Spec:** [docs/spec.md](../spec.md), [docs/design.md](../design.md), `a2ts-review-2026-10-01-codex-check.md`, `a2ts-review-2026-10-01-opus-check.md`.
 
 ## Global Constraints
 - Static checking: `uv run --frozen --no-sync mypy` must pass with 0 issues (`disallow_untyped_defs = true`).

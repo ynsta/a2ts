@@ -46,3 +46,14 @@ Under data privacy regulations including the European Union **General Data Prote
 - All external tool executions (`ffmpeg`, `ffprobe`, `agy`) strictly avoid `shell=True` and invoke argument vectors (`list[str]`) directly.
 - File paths supplied via CLI or metadata are resolved and validated to prevent directory traversal outside designated working or cache directories.
 - User-supplied metadata (YAML frontmatter, Craig `speakers.md`, `info.txt`) is parsed using safe parsers (`yaml.safe_load`).
+
+---
+
+## 4. Test Fixtures and Synthetic Roster Names
+
+All character names (such as `Brakk`, `Ilvaris`, `Garrick`), speaker tags, and Discord usernames (such as `tessaro`, `merrow1`) appearing across automated tests, documentation, and fixtures are synthetic tabletop roleplaying game (TTRPG) campaign lore and test fixtures.
+
+- No Personally Identifiable Information (PII) or real-world personal data is contained in this repository.
+- No proprietary lore, real user account credentials, tokens, or secrets are included in the codebase or git commit history.
+- Audio test fixtures and synthetic speaker labels exist solely for regression testing, performance benchmarking, and development validation.
+
