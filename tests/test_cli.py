@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from a2ts.cli import app
+from a2ts.cli import app, resolve_device_and_compute_type
 from a2ts.models import (
     AlignedTurn,
     EmbeddingCacheProvenance,
@@ -545,11 +545,7 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
 
     is_cuda = torch.cuda.is_available()
     resolved_engine = "nemotron" if is_cuda else "ecapa"
-    thash = (
-        compute_transcript_provenance_hash(trans_prov)
-        if resolved_engine == "ecapa"
-        else None
-    )
+    thash = compute_transcript_provenance_hash(trans_prov)
     diar_prov = DiarizationCacheProvenance(
         media_hash="abc1234",
         engine="auto",
@@ -1198,14 +1194,17 @@ def test_craig_command_e2e_mocked(tmp_path: Path) -> None:
 
     mock_engine.transcribe.side_effect = mock_transcribe
 
-    with patch("a2ts.cli.get_engine", return_value=mock_engine) as mock_get_engine:
+    with (
+        patch("torch.cuda.is_available", return_value=True),
+        patch("a2ts.cli.get_engine", return_value=mock_engine) as mock_get_engine,
+    ):
         result = runner.invoke(app, ["craig", str(rec_dir)])
 
     assert result.exit_code == 0
     mock_get_engine.assert_called_once_with(
         "whisper",
         model_name="large-v3",
-        device="auto",
+        device="cuda",
         compute_type="float16",
     )
 
@@ -1350,3 +1349,101 @@ def test_craig_command_caching_and_force(tmp_path: Path) -> None:
         res3 = runner.invoke(app, ["craig", str(rec_dir), "--force"])
         assert res3.exit_code == 0
         assert mock_engine.transcribe.call_count == 1
+
+
+def test_resolve_device_and_compute_type_cpu() -> None:
+    """Test device and compute type resolution on CPU."""
+    # Explicit cpu device with None compute_type
+    dev, ctype = resolve_device_and_compute_type(device="cpu", compute_type=None)
+    assert dev == "cpu"
+    assert ctype == "int8"
+
+    # Auto device when CUDA is not available
+    with patch("torch.cuda.is_available", return_value=False):
+        dev, ctype = resolve_device_and_compute_type(device="auto", compute_type=None)
+        assert dev == "cpu"
+        assert ctype == "int8"
+
+
+def test_resolve_device_and_compute_type_cuda() -> None:
+    """Test device and compute type resolution on CUDA."""
+    # Explicit cuda device with None compute_type
+    dev, ctype = resolve_device_and_compute_type(device="cuda", compute_type=None)
+    assert dev == "cuda"
+    assert ctype == "float16"
+
+    # Auto device when CUDA is available
+    with patch("torch.cuda.is_available", return_value=True):
+        dev, ctype = resolve_device_and_compute_type(device="auto", compute_type=None)
+        assert dev == "cuda"
+        assert ctype == "float16"
+
+
+def test_resolve_device_and_compute_type_explicit_compute_type() -> None:
+    """Test device resolution with user-specified compute type."""
+    # Custom compute_type preserved on CPU
+    dev, ctype = resolve_device_and_compute_type(device="cpu", compute_type="float32")
+    assert dev == "cpu"
+    assert ctype == "float32"
+
+    # Custom compute_type preserved on CUDA
+    dev, ctype = resolve_device_and_compute_type(device="cuda", compute_type="int8")
+    assert dev == "cuda"
+    assert ctype == "int8"
+
+    # Custom compute_type preserved with auto
+    with patch("torch.cuda.is_available", return_value=False):
+        dev, ctype = resolve_device_and_compute_type(
+            device="auto", compute_type="float32"
+        )
+        assert dev == "cpu"
+        assert ctype == "float32"
+
+
+def test_run_simulated_cpu_defaults(tmp_path: Path) -> None:
+    """Test CLI run defaults to cpu and int8 on simulated CPU environment."""
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"dummy video data for hash")
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(
+            id=0,
+            start=0.0,
+            end=2.0,
+            text="Simulated CPU transcript.",
+            words=[
+                WordTimestamp(word="Simulated", start=0.0, end=0.8),
+                WordTimestamp(word="CPU", start=0.9, end=1.2),
+                WordTimestamp(word="transcript.", start=1.3, end=2.0),
+            ],
+        )
+    ]
+
+    with (
+        patch("torch.cuda.is_available", return_value=False),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine", return_value=mock_engine) as mock_get_engine,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--no-diarize",
+                "--no-interactive",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result.exit_code == 0
+        mock_get_engine.assert_called_once_with(
+            "whisper",
+            device="cpu",
+            compute_type="int8",
+        )

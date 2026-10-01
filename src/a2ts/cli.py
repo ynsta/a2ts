@@ -66,7 +66,7 @@ from a2ts.timeline import (
     align_words_to_speaker_turns,
     assign_time_slices,
 )
-from a2ts.transcriber import WhisperEngine, get_engine
+from a2ts.transcriber import TranscriberEngine, WhisperEngine, get_engine
 from a2ts.vocab import (
     build_biasing_prompt,
     load_speaker_names,
@@ -76,6 +76,46 @@ from a2ts.vocab import (
 
 app = typer.Typer(help="a2ts: Contextualized Audio/Video Transcriber")
 console = Console()
+
+
+def resolve_device_and_compute_type(
+    device: str = "auto", compute_type: str | None = None
+) -> tuple[str, str]:
+    """Resolve compute device and quantization type dynamically."""
+    if device == "auto":
+        try:
+            import torch
+
+            resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            resolved_device = "cpu"
+    else:
+        resolved_device = device
+
+    if compute_type is None:
+        resolved_compute_type = "float16" if resolved_device == "cuda" else "int8"
+    else:
+        resolved_compute_type = compute_type
+
+    return resolved_device, resolved_compute_type
+
+
+def create_transcriber(
+    engine: str = "whisper",
+    model_name: str | None = None,
+    device: str = "auto",
+    compute_type: str = "float16",
+    **kwargs: Any,
+) -> TranscriberEngine:
+    """Create transcriber using configured engine, device, and compute type."""
+    engine_kwargs: dict[str, Any] = {
+        "device": device,
+        "compute_type": compute_type,
+        **kwargs,
+    }
+    if model_name is not None:
+        engine_kwargs["model_name"] = model_name
+    return get_engine(engine, **engine_kwargs)
 
 
 def resolve_session_dir(path: Path) -> Path:
@@ -173,11 +213,14 @@ def run(
         str | None, typer.Option(help="Model name or path for engine")
     ] = None,
     device: Annotated[
-        str, typer.Option(help="Device to run inference on (cuda/cpu)")
-    ] = "cuda",
+        str, typer.Option(help="Device to run inference on (auto/cuda/cpu)")
+    ] = "auto",
     compute_type: Annotated[
-        str, typer.Option(help="Computation type (float16/int8/etc.)")
-    ] = "float16",
+        str | None,
+        typer.Option(
+            help="Computation type (float16/int8/etc.) [default: auto (float16 on cuda, int8 on cpu)]"
+        ),
+    ] = None,
     context_dir: Annotated[
         Path, typer.Option(help="Directory containing Obsidian notes")
     ] = Path("contexte"),
@@ -309,6 +352,7 @@ def run(
 ) -> None:
     """Execute end-to-end transcription and diarization pipeline."""
     cache_dir.mkdir(parents=True, exist_ok=True)
+    device, compute_type = resolve_device_and_compute_type(device, compute_type)
     console.print(
         f"\n[bold green]=== Starting a2ts Pipeline for {media_file.name} ===[/bold green]\n"
     )
@@ -353,16 +397,12 @@ def run(
         raw_segments = cached_segments
     else:
         console.print(f"[bold]Step 3: Transcribing with engine '{engine}'...[/bold]")
-        engine_kwargs: dict[str, Any] = {}
-        if engine == "whisper":
-            engine_kwargs["device"] = device
-            engine_kwargs["compute_type"] = compute_type
-            if model_name:
-                engine_kwargs["model_name"] = model_name
-        elif engine == "voxtral":
-            if model_name:
-                engine_kwargs["model_name"] = model_name
-        transcriber = get_engine(engine, **engine_kwargs)
+        transcriber = create_transcriber(
+            engine=engine,
+            model_name=model_name,
+            device=device,
+            compute_type=compute_type,
+        )
         raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
         save_transcript_cache(transcript_cache, trans_prov, raw_segments)
 
@@ -387,7 +427,7 @@ def run(
         resolved_diarizer_engine = diarizer_engine
 
     transcript_prov_hash: str | None = None
-    if resolved_diarizer_engine == "ecapa" or diarizer_engine == "ecapa":
+    if trans_prov is not None:
         transcript_prov_hash = compute_transcript_provenance_hash(trans_prov)
 
     diar_prov = DiarizationCacheProvenance(
@@ -1001,6 +1041,10 @@ def recluster(
         int | None,
         typer.Option(help="Target speaker count for clustering"),
     ] = None,
+    device: Annotated[
+        str,
+        typer.Option(help="Device to run inference on (auto/cuda/cpu)"),
+    ] = "auto",
     slice_minutes: Annotated[
         float | None,
         typer.Option(help="Time slice window size in minutes"),
@@ -1083,6 +1127,7 @@ def recluster(
 
     # Check whether session used Nemotron
     is_nemotron = False
+    existing_device: str | None = None
     if session_meta.engine == "nemotron":
         is_nemotron = True
     else:
@@ -1091,6 +1136,7 @@ def recluster(
             try:
                 diar_data = json.loads(diar_cache_file.read_text(encoding="utf-8"))
                 if isinstance(diar_data, dict) and "provenance" in diar_data:
+                    existing_device = diar_data["provenance"].get("device")
                     p_engine = diar_data["provenance"].get(
                         "resolved_engine"
                     ) or diar_data["provenance"].get("engine")
@@ -1217,6 +1263,13 @@ def recluster(
         ),
     )
 
+    if device != "auto":
+        device_resolved, _ = resolve_device_and_compute_type(device)
+    elif existing_device:
+        device_resolved = existing_device
+    else:
+        device_resolved, _ = resolve_device_and_compute_type(device)
+
     diar_cache = diarization_dir / f"{media_hash}.json"
     diar_prov = DiarizationCacheProvenance(
         media_hash=media_hash,
@@ -1224,7 +1277,7 @@ def recluster(
         resolved_engine="ecapa",
         cluster_threshold=cluster_threshold,
         num_speakers=num_speakers,
-        device="cuda",
+        device=device_resolved,
         transcript_provenance_hash=expected_trans_hash
         or (session_meta.prompt_hash if session_meta.prompt_hash else None),
     )
@@ -1288,8 +1341,11 @@ def craig(
         str, typer.Option(help="Device to run inference on (auto/cuda/cpu)")
     ] = "auto",
     compute_type: Annotated[
-        str, typer.Option(help="Computation type (float16/int8/etc.)")
-    ] = "float16",
+        str | None,
+        typer.Option(
+            help="Computation type (float16/int8/etc.) [default: auto (float16 on cuda, int8 on cpu)]"
+        ),
+    ] = None,
     context_dir: Annotated[
         Path | None, typer.Option(help="Directory containing Obsidian markdown notes")
     ] = Path("contexte"),
@@ -1331,6 +1387,7 @@ def craig(
     console.print(
         f"\n[bold green]=== Starting Craig Pipeline for {recording_dir.name} ===[/bold green]\n"
     )
+    device, compute_type = resolve_device_and_compute_type(device, compute_type)
 
     # 1. Verify recording_dir.is_dir(). Discover tracks. If empty, report error and exit with code 1.
     if not recording_dir.is_dir():

@@ -158,7 +158,7 @@ class VoxtralEngine:
         self,
         model_name: str = "mistralai/Voxtral-Mini-3B-2507",
         load_4bit: bool = True,
-        device: str = "cuda",
+        device: str = "auto",
         compute_type: str = "float16",
         **kwargs: Any,
     ) -> None:
@@ -178,7 +178,7 @@ class VoxtralEngine:
                 VoxtralForConditionalGeneration,
             )
 
-            is_cuda = self.device == "cuda" and torch.cuda.is_available()
+            is_cuda = (self.device in ("cuda", "auto")) and torch.cuda.is_available()
             with console.status(
                 f"[bold cyan]Loading Voxtral model '{self.model_name}' on {self.device}...[/bold cyan]",
                 spinner="dots",
@@ -227,7 +227,9 @@ class VoxtralEngine:
         ]
 
         target_device = (
-            "cuda" if self.device == "cuda" and torch.cuda.is_available() else "cpu"
+            "cuda"
+            if (self.device in ("cuda", "auto")) and torch.cuda.is_available()
+            else "cpu"
         )
         with console.status(
             "[bold cyan]Encoding audio waveform and prompt...[/bold cyan]",
@@ -282,3 +284,21 @@ def get_engine(engine_type: str, **kwargs: Any) -> TranscriberEngine:
     elif normalized == "voxtral":
         return VoxtralEngine(**kwargs)
     raise ValueError(f"Unknown engine: {engine_type}. Expected 'voxtral' or 'whisper'.")
+
+
+def create_transcriber(
+    engine: str = "whisper",
+    model_name: str | None = None,
+    device: str = "auto",
+    compute_type: str = "float16",
+    **kwargs: Any,
+) -> TranscriberEngine:
+    """Factory creating configured TranscriberEngine instance with device and compute type forwarding."""
+    engine_kwargs: dict[str, Any] = {
+        "device": device,
+        "compute_type": compute_type,
+        **kwargs,
+    }
+    if model_name is not None:
+        engine_kwargs["model_name"] = model_name
+    return get_engine(engine, **engine_kwargs)

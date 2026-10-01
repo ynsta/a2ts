@@ -47,11 +47,14 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 ### 3.3 Dual-Engine Speech Recognition (ASR)
 - **Faster-Whisper**:
   - Utilizes CTranslate2 engine for high-efficiency Whisper inference.
+  - Platform & Device Execution: Runs on CUDA GPU (`float16`) or CPU (`int8` quantization). On macOS (Apple Silicon / Intel), Faster-Whisper runs via CPU with `int8` quantization (CTranslate2 has no Metal backend; `float16` on CPU is unsupported by CTranslate2).
+  - Adaptive defaults: `--device` defaults to `auto` (CUDA if available, else CPU); `--compute-type` defaults to adaptive resolution (`float16` on CUDA, `int8` on CPU).
   - Supports model sizes: `large-v3`, `turbo`, `medium`, `small`.
   - Configurable compute types (`float16`, `int8`, `float32`).
   - Word-level timestamp generation via attention alignment.
 - **Mistral Voxtral**:
   - Leverages Mistral AI's multimodal audio LLM (`mistralai/Voxtral-Mini-3B-2507`) via Hugging Face `transformers`.
+  - Accepts `--device` and `--compute-type` arguments (defaults to `auto` / `float16`).
   - Direct audio-context comprehension for nuanced speech patterns.
 
 ### 3.4 Acoustic Speaker Diarization
@@ -136,8 +139,8 @@ a2ts run <media_file> [OPTIONS]
 | `media_file` | `Path` (Arg) | *Required* | Path to input audio or video file |
 | `--engine` | `str` | `whisper` | ASR engine: `whisper` or `voxtral` |
 | `--model-name` | `str` | *Engine default* | Model checkpoint (e.g. `turbo`, `large-v3`) |
-| `--device` | `str` | `cuda` | Hardware device: `cuda` or `cpu` |
-| `--compute-type` | `str` | `float16` | Precision: `float16`, `int8`, `float32` |
+| `--device` | `str` | `auto` | Hardware device: `auto` (CUDA if available, else CPU), `cuda`, or `cpu` |
+| `--compute-type` | `str | None` | `None` (auto) | Precision: `auto` (`float16` on CUDA, `int8` on CPU), `float16`, `int8`, `float32` |
 | `--context-dir` | `Path` | `contexte` | Obsidian notes folder for lore extraction |
 | `--vocab-file` | `Path` | `None` | Optional custom vocabulary text file |
 | `--slice-minutes` | `float` | `15.0` | Time slice window size in minutes |
@@ -169,8 +172,8 @@ a2ts craig <recording_dir> [OPTIONS]
 | :--- | :--- | :--- | :--- |
 | `recording_dir` | `Path` (Arg) | *Required* | Path to folder containing Craig `.flac` audio tracks |
 | `--model-name` | `str` | `large-v3` | Whisper model name |
-| `--device` | `str` | `auto` | Device to run inference on (`auto`, `cuda`, `cpu`) |
-| `--compute-type` | `str` | `float16` | Computation type (`float16`, `int8`, `float32`, etc.) |
+| `--device` | `str` | `auto` | Device to run inference on: `auto` (CUDA if available, else CPU), `cuda`, or `cpu` |
+| `--compute-type` | `str | None` | `None` (auto) | Computation type: `auto` (`float16` on CUDA, `int8` on CPU), `float16`, `int8`, `float32`, etc. |
 | `--context-dir` | `Path` | `contexte` | Directory containing Obsidian markdown notes |
 | `--speakers-file` | `Path` | `None` | Path to speakers roster markdown file (`speakers.md`) |
 | `--output` | `Path` | `None` | Output markdown transcript path (defaults to `<recording_dir>/transcript.md`) |

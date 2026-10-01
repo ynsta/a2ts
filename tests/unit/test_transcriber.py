@@ -8,6 +8,7 @@ from a2ts.transcriber import (
     TranscriberEngine,
     VoxtralEngine,
     WhisperEngine,
+    create_transcriber,
     ensure_cuda_libs,
     get_engine,
 )
@@ -179,3 +180,36 @@ def test_voxtral_engine_transcribe_no_prompt() -> None:
 def test_ensure_cuda_libs() -> None:
     # ensure_cuda_libs should execute safely without exceptions
     ensure_cuda_libs()
+
+
+def test_create_transcriber_voxtral_forwards_device_and_compute_type() -> None:
+    engine = create_transcriber(
+        engine="voxtral",
+        model_name="dummy/voxtral",
+        device="cpu",
+        compute_type="int8",
+        load_4bit=False,
+    )
+    assert isinstance(engine, VoxtralEngine)
+    assert engine.device == "cpu"
+    assert engine.compute_type == "int8"
+    assert engine.model_name == "dummy/voxtral"
+
+
+def test_create_transcriber_whisper_forwards_device_and_compute_type() -> None:
+    engine = create_transcriber(
+        engine="whisper",
+        model_name="tiny",
+        device="cpu",
+        compute_type="int8",
+    )
+    assert isinstance(engine, WhisperEngine)
+    assert engine.device == "cpu"
+    assert engine.compute_type == "int8"
+    assert engine.model_name == "tiny"
+
+
+def test_voxtral_engine_defaults() -> None:
+    engine = VoxtralEngine()
+    assert engine.device == "auto"
+    assert engine.compute_type == "float16"

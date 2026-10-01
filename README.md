@@ -48,8 +48,8 @@ Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, 
 
 ## Requirements
 
-- **Linux** (x86_64) or **macOS** (Apple Silicon)
-  - *macOS Note*: Faster-Whisper runs via CPU/Metal. NVIDIA CUDA libraries (`nvidia-cudnn-cu12`, etc.) are platform-gated in `pyproject.toml` and omitted automatically on macOS.
+- **Linux** (x86_64) or **macOS** (Apple Silicon / Intel)
+  - *macOS Note*: Faster-Whisper runs via CPU on macOS (Apple Silicon / Intel) with `int8` quantization (CTranslate2 has no Metal backend; `float16` on CPU is unsupported). NVIDIA CUDA libraries (`nvidia-cudnn-cu12`, etc.) are platform-gated in `pyproject.toml` and omitted automatically on macOS.
 - **Python**: `>= 3.13`
 - **System Tools**: `ffmpeg` must be installed and available in `$PATH`
 - **Hardware**:
@@ -103,8 +103,8 @@ uv run a2ts run session.mkv \
 | :--- | :--- | :--- |
 | `--engine` | `whisper` | Transcription engine: `whisper` or `voxtral` |
 | `--model-name` | `large-v3` | Model name or Hugging Face repository ID |
-| `--device` | `cuda` | Device to run on: `cuda` or `cpu` |
-| `--compute-type` | `float16` | Precision: `float16`, `bfloat16`, `int8`, etc. |
+| `--device` | `auto` | Device to run on: `auto` (CUDA if available, else CPU), `cuda`, or `cpu` |
+| `--compute-type` | `auto` | Precision: defaults to `float16` on CUDA, `int8` on CPU (`int8`, `float16`, `float32`, etc.) |
 | `--diarizer-engine` | `auto` | Diarization engine: `auto`, `nemotron`, or `ecapa` |
 | `--cluster-threshold` | `0.60` | Cosine distance threshold for AgglomerativeClustering |
 | `--num-speakers` | `None` | Pre-fixed speaker count (disables automatic clustering cutoff) |
@@ -132,8 +132,8 @@ uv run a2ts craig ./recordings/session-01/ \
 | :--- | :--- | :--- |
 | `recording_dir` | *Required* | Path to folder containing Craig `.flac` audio tracks |
 | `--model-name` | `large-v3` | Faster-Whisper model checkpoint |
-| `--device` | `auto` | Device to run inference on: `auto`, `cuda`, or `cpu` |
-| `--compute-type` | `float16` | Precision: `float16`, `int8`, `float32`, etc. |
+| `--device` | `auto` | Device to run inference on: `auto` (CUDA if available, else CPU), `cuda`, or `cpu` |
+| `--compute-type` | `auto` | Precision: defaults to `float16` on CUDA, `int8` on CPU (`float16`, `int8`, `float32`, etc.) |
 | `--context-dir` | `contexte` | Obsidian notes folder for domain lore vocabulary biasing |
 | `--speakers-file` | `None` | Path to `speakers.md` roster (auto-discovered if in folder/cwd) |
 | `--debounce` | `2.0` | Debounce window in seconds for consecutive turns from same speaker |
