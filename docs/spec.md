@@ -6,6 +6,9 @@
 **Target Runtime**: Python >= 3.13 (`uv`, Hatchling)  
 **Hardware Profile**: Local GPU execution (NVIDIA CUDA Ampere+ / RTX 3080 10GB+)
 
+> [!WARNING]
+> ⚠️ **Experimental Project Status**: `a2ts` is an experimental project in active development. While potentially useful for audio/video transcription and tabletop RPG session analysis, it does not yet provide strong guarantees of stability, complete accuracy, or production readiness. Public APIs, CLI argument syntax, and cache schemas are subject to change between releases.
+
 ---
 
 ## 1. Executive Summary & Purpose
@@ -212,7 +215,15 @@ a2ts extract-vocab [DIRECTORY] [OPTIONS]
 ```
 
 ### 4.7 `a2ts info`
-Displays current environment, hardware accelerators, CUDA availability, and installed engine capabilities.
+Displays current environment, hardware accelerators, CUDA availability, and installed engine capabilities:
+- **Application & Runtime**: Displays `a2ts` version, Python version, and host operating system platform.
+- **PyTorch & Hardware Detection**: Detects installed PyTorch build, CUDA availability, and for each available CUDA device: device name and VRAM memory statistics (allocated VRAM, free VRAM, and total device VRAM in gigabytes). If CUDA is unavailable, reports CPU-only execution mode.
+- **Transcription Engines**: Reports detection and availability of `faster_whisper` (CTranslate2) and `Voxtral` (Hugging Face Transformers).
+- **Diarization Engines**: Reports detection and availability of SpeechBrain ECAPA-TDNN (`speechbrain`) and NVIDIA Nemotron-3 Diarization (`transformers`).
+
+```bash
+a2ts info
+```
 
 ---
 

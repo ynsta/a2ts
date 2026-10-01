@@ -12,7 +12,7 @@
 
 **Tech Stack:** Python 3.13, Faster-Whisper, Typer, Rich, Pydantic v2, Pytest, Mypy, Ruff.
 
-**Spec:** [docs/plans/2026-09-29-craig-adapter-design.md](file:///home/stany/Work/a2ts/docs/plans/2026-09-29-craig-adapter-design.md)
+**Spec:** [docs/archive/2026-09-29-craig-adapter-design.md](./2026-09-29-craig-adapter-design.md)
 
 ## Global Constraints
 - Python >=3.13 compatibility.

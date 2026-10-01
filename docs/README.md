@@ -37,6 +37,18 @@ docs/
 | [**`runbook.md`**](./runbook.md) | **The Ops** (Operations & Recipes) | `uv` installation, NVIDIA CUDA configuration, CLI command recipes, cache cleanup, common error fixes. |
 | [**`adr/`**](./adr/) | **The Why** (Architecture Decisions) | Numbered records explaining the rationale, trade-offs, and context behind technical choices. |
 
+### Active Architecture Decision Records (ADRs)
+
+| ADR | Title | Status | Date |
+| :--- | :--- | :--- | :--- |
+| [**ADR 0001**](./adr/0001-local-first-single-stream-audio-pipeline.md) | Local-First Single-Stream Audio Pipeline | Accepted | 2026-09-21 |
+| [**ADR 0002**](./adr/0002-dual-transcription-engines-voxtral-and-whisper.md) | Dual Transcription Engines (Voxtral and Faster-Whisper) | Accepted | 2026-09-21 |
+| [**ADR 0003**](./adr/0003-speaker-diarization-nemotron-and-ecapa-hybrid.md) | Speaker Diarization via Nemotron-3 and SpeechBrain ECAPA Hybrid | Accepted | 2026-09-29 |
+| [**ADR 0004**](./adr/0004-interactive-speaker-attribution-and-time-slicing.md) | Interactive Speaker Attribution and Time-Slicing | Accepted | 2026-09-22 |
+| [**ADR 0005**](./adr/0005-local-llm-refinement-via-agy-cli.md) | LLM Refinement via agy CLI and Remote Egress Boundary | Accepted | 2026-09-22 |
+| [**ADR 0006**](./adr/0006-craig-multi-track-discord-pipeline.md) | Craig Multi-Track Discord Pipeline Architecture | Accepted | 2026-09-29 |
+
+
 ---
 
 ## 2. Ephemeral vs Canonical Documentation

@@ -7,7 +7,7 @@
 Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, **Voxtral** (Mistral AI), and **Hybrid Acoustic Diarization**.
 
 > [!WARNING]
-> **Alpha Software**: `a2ts` is currently in active development (v0.2.0.dev1). Public APIs, CLI argument syntax, and cache schemas are subject to change between releases.
+> ⚠️ **Experimental Project**: `a2ts` is an experimental project in active development (v0.2.0.dev1). While potentially useful for audio/video transcription and tabletop RPG session analysis, it does not yet provide strong guarantees of stability, complete accuracy, or production readiness. Public APIs, CLI argument syntax, and cache schemas are subject to change between releases.
 
 `a2ts` is designed for single audio or video streams (recorded tabletop RPG sessions, conference meetings, interviews, screen recordings). It leverages Markdown/Obsidian lore for vocabulary biasing, transcribes speech with word-level timestamps, performs acoustic speaker diarization, matches persistent voice profiles, normalizes French RPG jargon and dice notations, and outputs clean Markdown transcripts.
 
@@ -42,7 +42,20 @@ Contextualized Single-Stream Audio & Video Transcriber with **Faster-Whisper**, 
 - Media files, audio streams, and generated transcripts never leave your machine during standard transcription and diarization.
 - Speech transcription (Faster-Whisper / Voxtral), acoustic diarization (Nemotron-3 / SpeechBrain ECAPA), embedding extraction, and clustering execute 100% locally on your CPU or GPU.
 - Hugging Face / CTranslate2 models are cached locally in your standard cache directories (`~/.cache/huggingface`, `~/.cache/speechbrain`).
+  - *First-run disk footprint*: Initial execution downloads required ASR and diarization neural models and tokenizers (approximately **~5 GB** total disk footprint).
 - **Remote Delegation Boundary (`--refine`)**: The optional `--refine` pass invokes the external `agy` CLI (`agy --model <model>`). When `agy` is configured with hosted models (such as Gemini, e.g. `gemini-3.8-flash-low`), transcript text is transmitted to the provider's API. A raw, unrefined transcript is always preserved on disk at `<output>.raw.md` before refinement. Users requiring strict air-gapped privacy should keep `--refine` disabled (the default) or use a local model backend with `agy`.
+
+### Voice Biometrics & GDPR Notice
+
+`a2ts` uses acoustic neural networks to compute 192-dimensional numerical speaker embedding centroids saved in `contexte/voice_profiles.json` and session cache directories (`.a2ts/sessions/`).
+
+- **Biometric Classification (GDPR Art. 9)**: Speaker embeddings capture distinct vocal tract characteristics and qualify as **biometric data** under data protection regulations (such as GDPR).
+- **Consent & Sharing**: Obtain informed participant consent before enrolling voice profiles. Never commit `contexte/voice_profiles.json` to public version control or distribute it to third parties.
+- **Erasure / Deletion**: To delete all enrolled voice profiles, simply delete the profile database:
+  ```bash
+  rm -f contexte/voice_profiles.json
+  ```
+  See [SECURITY.md](SECURITY.md) for full details on biometric data policies and vulnerability reporting.
 
 ---
 
@@ -86,7 +99,7 @@ uv sync --extra voxtral
 uv run a2ts info
 ```
 
-Displays detected CUDA devices, VRAM status, and available transcription engines.
+Displays platform and Python version, PyTorch version, detected CUDA devices, VRAM status (allocated, free, total), and availability of transcription engines (Faster-Whisper, Voxtral) and diarization engines (SpeechBrain ECAPA, Nemotron).
 
 ### 2. Transcribe and Diarize Media
 
@@ -139,7 +152,7 @@ uv run a2ts craig ./recordings/session-01/ \
 | `--debounce` | `2.0` | Debounce window in seconds for consecutive turns from same speaker |
 | `--force` | `False` | Force re-transcription ignoring `.transcripts/` track cache |
 | `--refine / --no-refine` | `False` | Run local LLM refiner pass on transcript via `agy` CLI |
-| `--refine-model` | `gemini-2.5-flash` | Model name for LLM refiner |
+| `--refine-model` | `gemini-3.8-flash-low` | Model name for LLM refiner |
 | `--refine-effort` | `low` | Reasoning effort for LLM refiner (`low`, `medium`, `high`) |
 | `--output` | `None` | Markdown transcript destination (defaults to `<recording_dir>/transcript.md`) |
 
@@ -178,6 +191,15 @@ This project adheres to the **`isec-iagen-dev` Tier B** documentation standard:
 
 ---
 
+## Contributing & Security
+
+- [**CONTRIBUTING.md**](CONTRIBUTING.md) — Development setup, quality gates, and code contribution standards.
+- [**SECURITY.md**](SECURITY.md) — Vulnerability reporting and voice biometrics privacy guidelines.
+
+---
+
 ## License
 
 This project is licensed under the [Apache 2.0 License](LICENSE).
+See [NOTICE](NOTICE) for copyright attribution.
+
