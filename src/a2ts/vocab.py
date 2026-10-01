@@ -1,11 +1,15 @@
 """Lore extraction and token-budgeted prompt construction."""
 
+import logging
 import re
 from pathlib import Path
+from typing import Any
 
 import tiktoken
 
 from a2ts.models import EntityRecord
+
+logger = logging.getLogger(__name__)
 
 WIKILINK_PATTERN = re.compile(r"\[\[([^|\]]+)(?:\|([^\]]+))?\]\]")
 ALIAS_BLOCK_PATTERN = re.compile(r"(?m)^aliases:\s*\n((?:\s*-\s*.+\n)+)")
@@ -59,6 +63,67 @@ FRENCH_STOPWORDS = {
     "sur",
     "sous",
 }
+
+PRIORITY_ORDER: dict[str, int] = {
+    "speaker": 0,
+    "character": 0,
+    "nickname": 0,
+    "custom": 1,
+    "wikilink": 2,
+    "alias": 3,
+    "heading": 4,
+}
+
+
+def _entity_priority(kind: str) -> int:
+    return PRIORITY_ORDER.get(kind.lower(), 5)
+
+
+_CACHED_TOKENIZER: Any = None
+
+
+def get_tokenizer() -> Any:
+    """Return a tokenizer for prompt budgeting, preferring faster-whisper over tiktoken."""
+    global _CACHED_TOKENIZER
+    if _CACHED_TOKENIZER is not None:
+        return _CACHED_TOKENIZER
+
+    try:
+        import tokenizers  # type: ignore[import-untyped]
+        from faster_whisper.tokenizer import Tokenizer  # type: ignore[import-untyped]
+
+        hf_hub = Path.home() / ".cache" / "huggingface" / "hub"
+        if hf_hub.is_dir():
+            tok_files = sorted(hf_hub.glob("models--*whisper*/**/tokenizer.json"))
+            if tok_files:
+                hf_tok = tokenizers.Tokenizer.from_file(str(tok_files[0]))
+                _CACHED_TOKENIZER = Tokenizer(
+                    hf_tok, multilingual=True, language="fr", task="transcribe"
+                )
+                return _CACHED_TOKENIZER
+    except (ImportError, OSError, ValueError) as err:
+        logger.debug(
+            "Faster-whisper tokenizer unavailable, falling back to tiktoken: %s",
+            err,
+        )
+
+    _CACHED_TOKENIZER = tiktoken.get_encoding("cl100k_base")
+    return _CACHED_TOKENIZER
+
+
+def count_tokens(text: str, tokenizer: Any = None) -> int:
+    """Count tokens in text, safely treating special tokens as normal text."""
+    if not text:
+        return 0
+    tok = tokenizer if tokenizer is not None else get_tokenizer()
+    if isinstance(tok, tiktoken.Encoding):
+        return len(tok.encode(text, disallowed_special=()))
+    if hasattr(tok, "encode"):
+        try:
+            return len(tok.encode(text))
+        except TypeError:
+            return len(tok.encode(text, disallowed_special=()))
+    return len(text.split())
 
 
 def extract_candidates_from_markdown(content: str, filename: str) -> list[EntityRecord]:
@@ -128,13 +193,21 @@ def scan_context_directory(context_dir: Path) -> list[EntityRecord]:
     return records
 
 
-def build_biasing_prompt(entities: list[EntityRecord], max_tokens: int = 220) -> str:
-    """Construct token-budgeted prompt from unique entity records."""
-    tokenizer = tiktoken.get_encoding("cl100k_base")
+def build_biasing_prompt(
+    entities: list[EntityRecord],
+    max_tokens: int = 180,
+    tokenizer: Any = None,
+) -> str:
+    """Construct token-budgeted prompt from unique entity records, prioritizing key terms."""
+    if tokenizer is None:
+        tokenizer = get_tokenizer()
+
+    sorted_entities = sorted(entities, key=lambda e: _entity_priority(e.kind))
+
     seen: set[str] = set()
     unique_names: list[str] = []
 
-    for e in entities:
+    for e in sorted_entities:
         cleaned = re.sub(r"\s+", " ", e.name).strip()
         if cleaned and cleaned.lower() not in seen:
             seen.add(cleaned.lower())
@@ -145,7 +218,7 @@ def build_biasing_prompt(entities: list[EntityRecord], max_tokens: int = 220) ->
     for name in unique_names:
         candidate_list = selected + [name]
         candidate_str = ", ".join(candidate_list)
-        token_count = len(tokenizer.encode(candidate_str))
+        token_count = count_tokens(candidate_str, tokenizer=tokenizer)
         if token_count <= max_tokens:
             selected.append(name)
         else:

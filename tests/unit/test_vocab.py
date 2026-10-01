@@ -2,9 +2,12 @@
 
 from pathlib import Path
 
+import tiktoken
+
 from a2ts.models import EntityRecord
 from a2ts.vocab import (
     build_biasing_prompt,
+    count_tokens,
     extract_candidates_from_markdown,
     load_speaker_names,
     load_wordlist_file,
@@ -156,3 +159,87 @@ def test_load_speaker_names(tmp_path: Path) -> None:
         "Dorsa",
         "Quillon",
     ]
+
+
+def test_special_tokens_handling() -> None:
+    """Special tokens like <|endoftext|> must be treated as literal text and not crash."""
+    special_names = [
+        "<|endoftext|>",
+        "<|fim_prefix|>",
+        "<|fim_middle|>",
+        "<|endofprompt|>",
+    ]
+    entities = [EntityRecord(name=name, kind="custom") for name in special_names]
+    prompt = build_biasing_prompt(entities)
+    for name in special_names:
+        assert name in prompt
+
+
+def test_build_biasing_prompt_priority_ordering() -> None:
+    """High priority entities (speakers, custom terms) must appear before lore wikilinks."""
+    entities = [
+        EntityRecord(name="MinorLocation", kind="heading"),
+        EntityRecord(name="Garrick", kind="speaker"),
+        EntityRecord(name="Phandaline", kind="wikilink"),
+        EntityRecord(name="Eldoria", kind="custom"),
+        EntityRecord(name="Kaelen", kind="character"),
+        EntityRecord(name="L'Ombre", kind="alias"),
+    ]
+    # Small budget to force truncation of low-priority terms
+    prompt = build_biasing_prompt(entities, max_tokens=15)
+    # Higher priority terms must be in the prompt
+    assert "Garrick" in prompt
+    assert "Kaelen" in prompt
+    assert "Eldoria" in prompt
+    # Lowest priority heading/alias should be excluded or at the end
+    assert "MinorLocation" not in prompt
+
+
+def test_build_biasing_prompt_default_budget_is_180() -> None:
+    """Default max_tokens must be 180 to fit within Whisper's 224-token buffer."""
+    import inspect
+
+    sig = inspect.signature(build_biasing_prompt)
+    assert sig.parameters["max_tokens"].default == 180
+
+
+def test_count_tokens() -> None:
+    """count_tokens must safely handle special tokens and empty strings."""
+    assert count_tokens("") == 0
+    assert count_tokens("Hello world") > 0
+    assert count_tokens("<|endoftext|> <|fim_prefix|>") > 0
+
+
+def test_special_tokens_with_explicit_tiktoken() -> None:
+    """Explicit tiktoken encoding must treat special tokens as literal text without error."""
+    enc = tiktoken.get_encoding("cl100k_base")
+    # count_tokens with explicit tiktoken
+    tokens = count_tokens("<|endoftext|> <|fim_middle|> <|endofprompt|>", tokenizer=enc)
+    assert tokens > 0
+
+    entities = [
+        EntityRecord(name="<|endoftext|>", kind="custom"),
+        EntityRecord(name="<|fim_prefix|>", kind="custom"),
+    ]
+    prompt = build_biasing_prompt(entities, tokenizer=enc)
+    assert "<|endoftext|>" in prompt
+    assert "<|fim_prefix|>" in prompt
+
+
+def test_count_tokens_custom_tokenizer() -> None:
+    """count_tokens must support arbitrary tokenizer implementing encode()."""
+
+    class DummyTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [42, 99]
+
+    assert count_tokens("any sample text", tokenizer=DummyTokenizer()) == 2
+
+
+def test_build_biasing_prompt_strictly_respects_max_tokens() -> None:
+    """Prompt must never exceed max_tokens regardless of entity count."""
+    entities = [
+        EntityRecord(name=f"EntityName_{i}", kind="wikilink") for i in range(150)
+    ]
+    prompt = build_biasing_prompt(entities, max_tokens=50)
+    assert count_tokens(prompt) <= 50
