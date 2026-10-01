@@ -89,6 +89,7 @@ class SessionMetadata(BaseModel):
     time_slice_minutes: float
     created_at: str
     output_path: str = ""
+    rpg_normalize: bool = True
 
 
 class VoiceProfile(BaseModel):

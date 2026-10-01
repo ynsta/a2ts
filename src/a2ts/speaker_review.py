@@ -1,17 +1,21 @@
 """Interactive speaker attribution review and mapping persistence."""
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, overload
 
+from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 
 from a2ts.cache import atomic_write_text
 from a2ts.media import play_audio_clip_async, stop_audio_playback
 from a2ts.models import AlignedTurn, ClusterSplit, SpeakersMapping
 
+logger = logging.getLogger(__name__)
 console = Console()
 
 
@@ -135,8 +139,27 @@ def load_speakers_mapping(path: Path) -> SpeakersMapping:
     target_file = path / "speakers_mapping.json" if path.is_dir() else path
     if not target_file.is_file():
         return SpeakersMapping()
-    data = json.loads(target_file.read_text(encoding="utf-8"))
-    return SpeakersMapping.model_validate(data)
+    try:
+        data = json.loads(target_file.read_text(encoding="utf-8"))
+        return SpeakersMapping.model_validate(data)
+    except (json.JSONDecodeError, ValidationError, OSError) as exc:
+        corrupt_backup = target_file.with_suffix(".corrupt.json")
+        logger.warning(
+            "Corrupt speakers mapping at %s (%s). Backing up to %s",
+            target_file,
+            exc,
+            corrupt_backup,
+        )
+        try:
+            target_file.replace(corrupt_backup)
+        except OSError as move_exc:
+            logger.warning(
+                "Failed to rename corrupt file %s to %s: %s",
+                target_file,
+                corrupt_backup,
+                move_exc,
+            )
+        return SpeakersMapping()
 
 
 def run_interactive_review(
@@ -188,7 +211,7 @@ def run_interactive_review(
             continue
 
         console.print(
-            f"[bold yellow]Speaker Cluster: {cid}[/bold yellow] ({data['turn_count']} turns, ~{data['total_duration']:.1f}s)"
+            f"[bold yellow]Speaker Cluster: {escape(cid)}[/bold yellow] ({data['turn_count']} turns, ~{data['total_duration']:.1f}s)"
         )
         sample_turns: list[AlignedTurn] = data.get("sample_turns", [])
         console.print("Sample quotes:")
@@ -197,18 +220,22 @@ def run_interactive_review(
             p_tag = (
                 f"[bold magenta][p{idx_sample}][/bold magenta] " if audio_path else ""
             )
-            console.print(f'  {p_tag}• [[bold]{m:02d}:{s:02d}[/bold]] "{sample}"')
+            console.print(
+                f'  {p_tag}• [[bold]{m:02d}:{s:02d}[/bold]] "{escape(sample)}"'
+            )
 
         current = mapping.cluster_defaults.get(cid)
         if current:
-            console.print(f"Current mapping: [bold green]{current}[/bold green]")
+            console.print(
+                f"Current mapping: [bold green]{escape(current)}[/bold green]"
+            )
 
         console.print("\nCandidate options:")
         opts = {str(i + 1): name for i, name in enumerate(candidates[:10])}
         for idx, name in opts.items():
-            console.print(f"  [{idx}] {name}")
+            console.print(f"  [{idx}] {escape(name)}")
         skip_label = (
-            f"Keep current ({current})" if current else "Skip (keep cluster ID)"
+            f"Keep current ({escape(current)})" if current else "Skip (keep cluster ID)"
         )
         if audio_path:
             console.print("  [p] Replay sample 1 audio (or type p1, p2, p3)")
@@ -301,7 +328,7 @@ def run_interactive_review(
                 continue
             elif raw_choice == "s" or not raw_choice:
                 kept = mapping.cluster_defaults.get(cid, cid)
-                console.print(f"[dim]Kept {kept}[/dim]\n")
+                console.print(f"[dim]Kept {escape(kept)}[/dim]\n")
                 break
             elif raw_choice == "t":
                 slices: dict[int, list[AlignedTurn]] = {}
@@ -310,7 +337,7 @@ def run_interactive_review(
                         slices.setdefault(t.time_slice_id, []).append(t)
 
                 console.print(
-                    f"\n[bold magenta]=== Reviewing {cid} by Time Slice ({len(slices)} slices) ===[/bold magenta]"
+                    f"\n[bold magenta]=== Reviewing {escape(cid)} by Time Slice ({len(slices)} slices) ===[/bold magenta]"
                 )
                 for slice_id in sorted(slices.keys()):
                     slice_turns = slices[slice_id]
@@ -343,11 +370,11 @@ def run_interactive_review(
                             else ""
                         )
                         console.print(
-                            f'  {p_tag}• [[bold]{sh:02d}:{sm:02d}:{ss:02d}[/bold]] "{sample_turn.text}"'
+                            f'  {p_tag}• [[bold]{sh:02d}:{sm:02d}:{ss:02d}[/bold]] "{escape(sample_turn.text)}"'
                         )
 
                     console.print(
-                        f"Current mapping: [bold green]{curr_str}[/bold green]"
+                        f"Current mapping: [bold green]{escape(curr_str)}[/bold green]"
                     )
                     if audio_path:
                         console.print(
@@ -437,7 +464,7 @@ def run_interactive_review(
                                 )
                             continue
                         elif slice_choice == "s" or not slice_choice:
-                            console.print(f"[dim]Kept {curr_str}[/dim]")
+                            console.print(f"[dim]Kept {escape(curr_str)}[/dim]")
                             break
                         elif slice_choice in opts:
                             mapping.slice_overrides.setdefault(str(slice_id), {})[
@@ -445,7 +472,7 @@ def run_interactive_review(
                             ] = opts[slice_choice]
                             mapping.label_sources[cid] = "manual"
                             console.print(
-                                f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {opts[slice_choice]}[/green]"
+                                f"[green]✓ Mapped {escape(cid)} (Slice {slice_id}) -> {escape(opts[slice_choice])}[/green]"
                             )
                             _persist_progress()
                             break
@@ -457,7 +484,7 @@ def run_interactive_review(
                                 ] = c_name
                                 mapping.label_sources[cid] = "manual"
                                 console.print(
-                                    f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {c_name}[/green]"
+                                    f"[green]✓ Mapped {escape(cid)} (Slice {slice_id}) -> {escape(c_name)}[/green]"
                                 )
                                 _persist_progress()
                             break
@@ -467,7 +494,7 @@ def run_interactive_review(
                             ] = slice_choice
                             mapping.label_sources[cid] = "manual"
                             console.print(
-                                f"[green]✓ Mapped {cid} (Slice {slice_id}) -> {slice_choice}[/green]"
+                                f"[green]✓ Mapped {escape(cid)} (Slice {slice_id}) -> {escape(slice_choice)}[/green]"
                             )
                             _persist_progress()
                             break
@@ -476,7 +503,9 @@ def run_interactive_review(
             elif raw_choice in opts:
                 mapping.cluster_defaults[cid] = opts[raw_choice]
                 mapping.label_sources[cid] = "manual"
-                console.print(f"[green]✓ Mapped {cid} -> {opts[raw_choice]}[/green]\n")
+                console.print(
+                    f"[green]✓ Mapped {escape(cid)} -> {escape(opts[raw_choice])}[/green]\n"
+                )
                 _persist_progress()
                 break
             elif raw_choice == "c":
@@ -484,13 +513,17 @@ def run_interactive_review(
                 if custom_name:
                     mapping.cluster_defaults[cid] = custom_name
                     mapping.label_sources[cid] = "manual"
-                    console.print(f"[green]✓ Mapped {cid} -> {custom_name}[/green]\n")
+                    console.print(
+                        f"[green]✓ Mapped {escape(cid)} -> {escape(custom_name)}[/green]\n"
+                    )
                     _persist_progress()
                 break
             else:
                 mapping.cluster_defaults[cid] = raw_choice
                 mapping.label_sources[cid] = "manual"
-                console.print(f"[green]✓ Mapped {cid} -> {raw_choice}[/green]\n")
+                console.print(
+                    f"[green]✓ Mapped {escape(cid)} -> {escape(raw_choice)}[/green]\n"
+                )
                 _persist_progress()
                 break
 

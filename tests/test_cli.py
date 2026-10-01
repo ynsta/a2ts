@@ -484,6 +484,7 @@ def test_run_with_cluster_threshold_and_voice_profiles(tmp_path: Path) -> None:
                 "4",
                 "--voice-profiles",
                 str(profiles_path),
+                "--interactive",
                 "--no-refine",
             ],
         )
@@ -605,6 +606,7 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
                 str(cache_dir),
                 "--voice-profiles",
                 str(profiles_path),
+                "--interactive",
                 "--no-refine",
             ],
         )
@@ -1505,3 +1507,233 @@ def test_cli_imports_create_transcriber_from_transcriber() -> None:
     import a2ts.transcriber
 
     assert a2ts.cli.create_transcriber is a2ts.transcriber.create_transcriber
+
+
+def test_info_command_diagnostics() -> None:
+    """Test that info command prints diagnostics with version, device, and engines."""
+    from a2ts import __version__
+
+    result = runner.invoke(app, ["info"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
+    assert "Python" in result.output
+    assert "PyTorch" in result.output
+    assert "CUDA" in result.output
+    assert "Faster-Whisper" in result.output
+    assert "Voxtral" in result.output
+    assert "SpeechBrain ECAPA" in result.output
+    assert "Nemotron" in result.output
+
+
+def test_run_non_tty_defaults_to_non_interactive(tmp_path: Path) -> None:
+    """Test run on non-TTY defaults to non-interactive mode unless specified."""
+    media_file = tmp_path / "video.mp4"
+    media_file.touch()
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    with (
+        patch("sys.stdin.isatty", return_value=False),
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+        patch("a2ts.cli.run_interactive_review") as mock_review,
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Hello", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+        mock_review.return_value = SpeakersMapping()
+
+        # 1. Default (interactive=None, isatty=False) -> should NOT invoke review
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--no-diarize",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result.exit_code == 0
+        mock_review.assert_not_called()
+
+        # 2. Explicit --interactive -> should invoke review even on non-TTY
+        result2 = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--no-diarize",
+                "--interactive",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result2.exit_code == 0
+        mock_review.assert_called_once()
+
+
+def test_session_metadata_stores_rpg_normalize_and_prompt_hash(tmp_path: Path) -> None:
+    """Test that SessionMetadata stores rpg_normalize and deterministic prompt_hash."""
+    from a2ts.cache import compute_prompt_hash
+
+    media_file = tmp_path / "video.mp4"
+    media_file.touch()
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    with (
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine") as mock_engine,
+    ):
+        mock_transcriber = MagicMock()
+        mock_transcriber.transcribe.return_value = [
+            RawSegment(id=0, start=0.0, end=2.0, text="Hello", words=[])
+        ]
+        mock_engine.return_value = mock_transcriber
+
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--no-diarize",
+                "--no-interactive",
+                "--no-rpg-normalize",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result.exit_code == 0
+
+        session_files = list((cache_dir / "sessions").glob("*/session.json"))
+        assert len(session_files) == 1
+        session_data = json.loads(session_files[0].read_text(encoding="utf-8"))
+        assert session_data.get("rpg_normalize") is False
+        assert session_data.get("prompt_hash") == compute_prompt_hash(None)
+
+
+def test_review_defaults_output_to_session_output_path(tmp_path: Path) -> None:
+    """Test review subcommand defaults --output to session's output_path."""
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    custom_out = tmp_path / "custom_session_output.md"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello from review.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
+    )
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "hash123",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "no_prompt",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-10-01T00:00:00Z",
+        "output_path": str(custom_out),
+        "rpg_normalize": True,
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+
+    with patch(
+        "a2ts.cli.run_interactive_review",
+        return_value=SpeakersMapping(cluster_defaults={"SPEAKER_00": "Alice"}),
+    ):
+        result = runner.invoke(app, ["review", str(session_dir)])
+        assert result.exit_code == 0
+        assert custom_out.is_file()
+        assert "Alice" in custom_out.read_text(encoding="utf-8")
+
+
+def test_review_and_split_respect_session_rpg_normalize(tmp_path: Path) -> None:
+    """Test review and split respect rpg_normalize=False from session.json."""
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    out_file = tmp_path / "out.md"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Je lance un dé 20 et fais 1 d 6.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
+    )
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "hash123",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "no_prompt",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-10-01T00:00:00Z",
+        "output_path": str(out_file),
+        "rpg_normalize": False,
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+
+    with patch(
+        "a2ts.cli.run_interactive_review",
+        return_value=SpeakersMapping(),
+    ):
+        result = runner.invoke(app, ["review", str(session_dir)])
+        assert result.exit_code == 0
+        content = out_file.read_text(encoding="utf-8")
+        assert "dé 20" in content
+
+    # Now test split respecting rpg_normalize=False
+    split_out = tmp_path / "split_out.md"
+    result_split = runner.invoke(
+        app,
+        [
+            "split",
+            str(session_dir),
+            "SPEAKER_00",
+            "--at",
+            "2.0",
+            "--to",
+            "SPEAKER_01",
+            "--output",
+            str(split_out),
+        ],
+    )
+    assert result_split.exit_code == 0
+    content_split = split_out.read_text(encoding="utf-8")
+    assert "dé 20" in content_split

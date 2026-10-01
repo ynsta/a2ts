@@ -1,7 +1,8 @@
 """CLI application and pipeline orchestration for a2ts."""
 
-import hashlib
 import json
+import platform
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ import typer
 from rich.console import Console
 from sklearn.cluster import AgglomerativeClustering  # type: ignore[import-untyped]
 
+from a2ts import __version__
 from a2ts.cache import (
     atomic_write_text,
     compute_prompt_hash,
@@ -148,8 +150,76 @@ def resolve_session_dir(path: Path) -> Path:
 
 @app.command()
 def info() -> None:
-    """Show system information and a2ts configuration."""
-    console.print("[bold green]a2ts[/bold green] - Audio/Video Transcriber ready.")
+    """Show system information, hardware capabilities, and engine availability."""
+    console.print(f"[bold green]a2ts[/bold green] v{__version__} - Ready\n")
+
+    # Platform & Python
+    console.print(
+        f"[bold]Python:[/bold] {platform.python_version()} ({platform.platform()})"
+    )
+
+    # PyTorch & Device Detection
+    try:
+        import torch
+
+        torch_ver = torch.__version__
+        cuda_avail = torch.cuda.is_available()
+        console.print(
+            f"[bold]PyTorch:[/bold] {torch_ver} (CUDA available: {cuda_avail})"
+        )
+        if cuda_avail:
+            device_count = torch.cuda.device_count()
+            console.print(f"  [bold]CUDA Devices ({device_count}):[/bold]")
+            for i in range(device_count):
+                dev_name = torch.cuda.get_device_name(i)
+                try:
+                    free_b, total_b = torch.cuda.mem_get_info(i)
+                    alloc_b = torch.cuda.memory_allocated(i)
+                    free_gb = free_b / (1024**3)
+                    total_gb = total_b / (1024**3)
+                    alloc_gb = alloc_b / (1024**3)
+                    vram_info = f"{alloc_gb:.2f} GB allocated, {free_gb:.2f} GB free, {total_gb:.2f} GB total"
+                except (RuntimeError, ValueError, AttributeError, OSError):
+                    vram_info = "VRAM query unavailable"
+                console.print(f"    [{i}] {dev_name} - VRAM: {vram_info}")
+        else:
+            console.print("  [dim]CUDA not available - CPU inference mode only[/dim]")
+    except ImportError:
+        console.print("[yellow]PyTorch: Not installed[/yellow]")
+
+    # Transcription Engines
+    console.print("\n[bold]Transcription Engines:[/bold]")
+    try:
+        import faster_whisper  # type: ignore[import-untyped] # noqa: F401
+
+        console.print("  • [green]Faster-Whisper:[/green] Available (CTranslate2)")
+    except ImportError:
+        console.print("  • [red]Faster-Whisper:[/red] Not available")
+
+    try:
+        from transformers import VoxtralForConditionalGeneration  # noqa: F401
+
+        console.print("  • [green]Voxtral:[/green] Available (Transformers)")
+    except (ImportError, AttributeError):
+        console.print("  • [yellow]Voxtral:[/yellow] Not available (optional)")
+
+    # Diarization Engines
+    console.print("\n[bold]Diarization Engines:[/bold]")
+    try:
+        from speechbrain.inference.speaker import (  # type: ignore[import-untyped] # noqa: F401
+            EncoderClassifier,
+        )
+
+        console.print("  • [green]SpeechBrain ECAPA:[/green] Available (ECAPA-TDNN)")
+    except ImportError:
+        console.print("  • [red]SpeechBrain ECAPA:[/red] Not available")
+
+    try:
+        from transformers import AutoModelForAudioFrameClassification  # noqa: F401
+
+        console.print("  • [green]Nemotron:[/green] Available (NVIDIA Nemotron-3)")
+    except (ImportError, AttributeError):
+        console.print("  • [yellow]Nemotron:[/yellow] Not available (optional)")
 
 
 @app.command()
@@ -264,8 +334,12 @@ def run(
         ),
     ] = None,
     interactive: Annotated[
-        bool, typer.Option(help="Enable interactive QCM speaker review")
-    ] = True,
+        bool | None,
+        typer.Option(
+            "--interactive/--no-interactive",
+            help="Enable interactive QCM speaker review [default: auto (True if TTY)]",
+        ),
+    ] = None,
     auto_play: Annotated[
         bool, typer.Option(help="Auto-play audio sample during speaker review")
     ] = True,
@@ -338,6 +412,7 @@ def run(
 ) -> None:
     """Execute end-to-end transcription and diarization pipeline."""
     cache_dir.mkdir(parents=True, exist_ok=True)
+    is_interactive = sys.stdin.isatty() if interactive is None else interactive
     device, compute_type = resolve_device_and_compute_type(device, compute_type)
     if engine.lower().strip() == "voxtral" and diarize:
         console.print(
@@ -541,7 +616,7 @@ def run(
                     f"[yellow]Warning: Voice profile matching skipped: {exc}[/yellow]"
                 )
 
-    if interactive:
+    if is_interactive:
         known_speakers = load_speaker_names(
             speakers_file=speakers_file,
             speakers_arg=speakers,
@@ -668,9 +743,7 @@ def run(
     resolved_model_name = model_name or (
         "large-v3" if engine == "whisper" else "mistralai/Voxtral-Mini-3B-2507"
     )
-    prompt_hash = (
-        hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16] if prompt else ""
-    )
+    prompt_hash = compute_prompt_hash(prompt)
     session_meta = SessionMetadata(
         media_path=str(media_file),
         media_hash=file_hash,
@@ -681,6 +754,7 @@ def run(
         time_slice_minutes=slice_minutes,
         created_at=datetime.now(UTC).isoformat(),
         output_path=str(output),
+        rpg_normalize=rpg_normalize,
     )
     atomic_write_text(
         session_dir / "session.json",
@@ -727,9 +801,12 @@ def review(
             help="Path to speakers text file (default auto-detects contexte/speakers.txt)"
         ),
     ] = None,
-    output: Annotated[Path, typer.Option(help="Output markdown path")] = Path(
-        "transcript.md"
-    ),
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            help="Output markdown path [default: session output_path or transcript.md]"
+        ),
+    ] = None,
     auto_play: Annotated[
         bool, typer.Option(help="Auto-play audio sample during speaker review")
     ] = True,
@@ -791,6 +868,7 @@ def review(
     )
 
     audio_path: Path | None = None
+    session_meta: SessionMetadata | None = None
     session_path = session_dir / "session.json"
     if session_path.is_file():
         try:
@@ -807,20 +885,15 @@ def review(
             elif Path(session_meta.media_path).is_file():
                 audio_path = Path(session_meta.media_path)
         except (ValueError, KeyError, OSError):
+            session_meta = None
             audio_path = None
 
     mapping_path = session_dir / "speakers_mapping.json"
     mapping = load_speakers_mapping(mapping_path)
 
-    media_hash: str | None = None
-    if session_path.is_file():
-        try:
-            session_meta = SessionMetadata.model_validate_json(
-                session_path.read_text(encoding="utf-8")
-            )
-            media_hash = session_meta.media_hash
-        except (ValueError, KeyError, OSError):
-            media_hash = None
+    media_hash: str | None = (
+        session_meta.media_hash if session_meta is not None else None
+    )
 
     diarization_dir = session_dir / "diarization"
     if not diarization_dir.is_dir() and (cache_root / "diarization").is_dir():
@@ -953,12 +1026,21 @@ def review(
                     f"[yellow]Warning: Voice profiles update skipped in review: {exc}[/yellow]"
                 )
 
-    debounced_turns = debounce_consecutive_turns(aligned_turns)
-    raw_md = render_markdown_transcript(debounced_turns)
+    target_output = output
+    rpg_norm = True
+    if session_meta is not None:
+        rpg_norm = session_meta.rpg_normalize
+        if target_output is None and session_meta.output_path:
+            target_output = Path(session_meta.output_path)
+    if target_output is None:
+        target_output = Path("transcript.md")
 
-    atomic_write_text(output, raw_md)
+    debounced_turns = debounce_consecutive_turns(aligned_turns)
+    raw_md = render_markdown_transcript(debounced_turns, rpg_normalize=rpg_norm)
+
+    atomic_write_text(target_output, raw_md)
     console.print(
-        f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {output}\n"
+        f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {target_output}\n"
     )
 
 
@@ -997,19 +1079,25 @@ def split(
         ),
     )
 
-    mapped_turns = apply_speakers_mapping(updated_turns, mapping)
-    debounced_turns = debounce_consecutive_turns(mapped_turns)
-    raw_md = render_markdown_transcript(debounced_turns)
-
-    out_path = output
-    if out_path is None:
-        session_path = session_dir / "session.json"
-        if session_path.is_file():
+    rpg_norm = True
+    session_path = session_dir / "session.json"
+    meta: SessionMetadata | None = None
+    if session_path.is_file():
+        try:
             meta = SessionMetadata.model_validate_json(
                 session_path.read_text(encoding="utf-8")
             )
-            if meta.output_path:
-                out_path = Path(meta.output_path)
+            rpg_norm = meta.rpg_normalize
+        except (ValueError, KeyError, OSError):
+            meta = None
+
+    mapped_turns = apply_speakers_mapping(updated_turns, mapping)
+    debounced_turns = debounce_consecutive_turns(mapped_turns)
+    raw_md = render_markdown_transcript(debounced_turns, rpg_normalize=rpg_norm)
+
+    out_path = output
+    if out_path is None and meta is not None and meta.output_path:
+        out_path = Path(meta.output_path)
     if out_path is None:
         out_path = Path("transcript.md")
 
@@ -1308,7 +1396,9 @@ def recluster(
     mapped_turns = apply_speakers_mapping(aligned_turns, mapping)
 
     debounced_turns = debounce_consecutive_turns(mapped_turns)
-    raw_md = render_markdown_transcript(debounced_turns)
+    raw_md = render_markdown_transcript(
+        debounced_turns, rpg_normalize=session_meta.rpg_normalize
+    )
 
     out_path = output
     if out_path is None:

@@ -212,6 +212,7 @@ def test_voice_profiles_enrollment_and_recluster_e2e(
             str(out1),
             "--no-refine",
             "--no-auto-play",
+            "--interactive",
         ],
     )
     assert result1.exit_code == 0

@@ -651,3 +651,45 @@ def test_save_speakers_mapping_argument_order(tmp_path: Path) -> None:
     save_speakers_mapping(p2, mapping)
     assert load_speakers_mapping(p1).cluster_defaults == {"SPEAKER_00": "Alice"}
     assert load_speakers_mapping(p2).cluster_defaults == {"SPEAKER_00": "Alice"}
+
+
+def test_run_interactive_review_escapes_rich_markup() -> None:
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="[SPEAKER_00]",
+            text="Texte avec [/i] et [bold] et [yellow]balises[/yellow].",
+        ),
+    ]
+    candidates = ["[NPC] Garde", "Alice"]
+    prompt_inputs = ["1"]
+    with patch("a2ts.speaker_review.Prompt.ask", side_effect=prompt_inputs):
+        mapping = run_interactive_review(turns, candidates)
+        assert mapping.cluster_defaults["[SPEAKER_00]"] == "[NPC] Garde"
+
+
+def test_load_speakers_mapping_corrupt_json(tmp_path: Path) -> None:
+    corrupt_file = tmp_path / "speakers_mapping.json"
+    corrupt_file.write_text("{this is not valid json", encoding="utf-8")
+
+    mapping = load_speakers_mapping(corrupt_file)
+    assert mapping == SpeakersMapping()
+    backup_file = tmp_path / "speakers_mapping.corrupt.json"
+    assert backup_file.is_file()
+    assert backup_file.read_text(encoding="utf-8") == "{this is not valid json"
+
+
+def test_load_speakers_mapping_schema_error(tmp_path: Path) -> None:
+    schema_err_file = tmp_path / "speakers_mapping.json"
+    schema_err_file.write_text(
+        '{"cluster_defaults": "invalid_string_not_dict"}', encoding="utf-8"
+    )
+
+    mapping = load_speakers_mapping(schema_err_file)
+    assert mapping == SpeakersMapping()
+    backup_file = tmp_path / "speakers_mapping.corrupt.json"
+    assert backup_file.is_file()
+    assert "invalid_string_not_dict" in backup_file.read_text(encoding="utf-8")
