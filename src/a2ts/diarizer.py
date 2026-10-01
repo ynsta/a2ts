@@ -489,11 +489,14 @@ def extract_embeddings_for_segments(
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speech segments."""
     resolved_media_hash = media_hash or (cache_prefix.name if cache_prefix else "")
+    resolved_trans_prov_hash = transcript_provenance_hash or (
+        compute_entity_fingerprint(segments) if segments else None
+    )
     if cache_prefix is not None and not force:
         cached = load_segment_embeddings(
             cache_prefix=cache_prefix,
             media_hash=resolved_media_hash,
-            expected_transcript_provenance_hash=transcript_provenance_hash,
+            expected_transcript_provenance_hash=resolved_trans_prov_hash,
             segments=segments,
         )
         if cached is not None:
@@ -560,7 +563,7 @@ def extract_embeddings_for_segments(
             emb_matrix=emb_matrix,
             valid_indices=valid_indices,
             media_hash=resolved_media_hash,
-            transcript_provenance_hash=transcript_provenance_hash,
+            transcript_provenance_hash=resolved_trans_prov_hash,
             segments=segments,
         )
 
@@ -581,11 +584,14 @@ def extract_embeddings_for_turns(
 ) -> tuple[np.ndarray, list[int]]:
     """Extract and cache speaker embeddings for speaker turns using ECAPA-TDNN."""
     resolved_media_hash = media_hash or (cache_prefix.name if cache_prefix else "")
+    resolved_diar_prov_hash = diarization_provenance_hash or (
+        compute_entity_fingerprint(turns) if turns else None
+    )
     if cache_prefix is not None and not force:
         cached = load_turn_embeddings(
             cache_prefix=cache_prefix,
             media_hash=resolved_media_hash,
-            expected_diarization_provenance_hash=diarization_provenance_hash,
+            expected_diarization_provenance_hash=resolved_diar_prov_hash,
             turns=turns,
         )
         if cached is not None:
@@ -651,7 +657,7 @@ def extract_embeddings_for_turns(
             emb_matrix=emb_matrix,
             valid_indices=valid_indices,
             media_hash=resolved_media_hash,
-            diarization_provenance_hash=diarization_provenance_hash,
+            diarization_provenance_hash=resolved_diar_prov_hash,
             turns=turns,
         )
 

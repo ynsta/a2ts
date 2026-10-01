@@ -264,13 +264,25 @@ def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
     # Mock transcripts cache
     transcripts_dir = session_dir / "transcripts"
     transcripts_dir.mkdir(parents=True)
-    segments = [
-        {"id": 0, "start": 0.0, "end": 10.0, "text": "Segment 1", "words": []},
-        {"id": 1, "start": 15.0, "end": 25.0, "text": "Segment 2", "words": []},
-        {"id": 2, "start": 40.0, "end": 50.0, "text": "Segment 3", "words": []},
+    from a2ts.models import RawSegment, TranscriptCacheFile, TranscriptCacheProvenance
+
+    trans_prov = TranscriptCacheProvenance(
+        media_hash=media_hash,
+        engine="whisper",
+        model_name="large-v3",
+        prompt_hash="no_prompt",
+        compute_type="float16",
+    )
+    raw_segs = [
+        RawSegment(id=0, start=0.0, end=10.0, text="Segment 1", words=[]),
+        RawSegment(id=1, start=15.0, end=25.0, text="Segment 2", words=[]),
+        RawSegment(id=2, start=40.0, end=50.0, text="Segment 3", words=[]),
     ]
     (transcripts_dir / f"{media_hash}_whisper.json").write_text(
-        json.dumps({"segments": segments}, indent=2), encoding="utf-8"
+        TranscriptCacheFile(provenance=trans_prov, segments=raw_segs).model_dump_json(
+            indent=2
+        ),
+        encoding="utf-8",
     )
 
     # Mock diarization cache with 1D identical embeddings
@@ -285,6 +297,7 @@ def test_recluster_applies_persisted_splits(tmp_path: Path) -> None:
         entity_kind="segment",
         media_hash=media_hash,
         count=3,
+        transcript_provenance_hash=trans_prov.compute_hash(),
     )
     (diar_dir / f"{media_hash}_segment_embeddings_provenance.json").write_text(
         prov.model_dump_json(), encoding="utf-8"
