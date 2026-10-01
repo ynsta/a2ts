@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, Pydantic v2, Pytest, Ruff, Mypy, Faster-Whisper, SpeechBrain, CTranslate2, Typer, Rich.
 
-**Spec:** [docs/spec.md](file:///home/stany/Work/a2ts/docs/spec.md), [docs/design.md](file:///home/stany/Work/a2ts/docs/design.md), [a2ts-review-2026-10-01-codex.md](file:///home/stany/Work/a2ts-review-2026-10-01-codex.md), [a2ts-review-2026-10-01-opus.md](file:///home/stany/Work/a2ts-review-2026-10-01-opus.md).
+**Spec:** [docs/spec.md](../spec.md), [docs/design.md](../design.md), [a2ts-review-2026-10-01-codex.md](../../a2ts-review-2026-10-01-codex.md), [a2ts-review-2026-10-01-opus.md](../../a2ts-review-2026-10-01-opus.md).
 
 ## Global Constraints
 

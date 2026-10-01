@@ -195,7 +195,11 @@ rm -rf recordings/session_01/.transcripts/
   1. Switch to a smaller Whisper model: `--model-name turbo` or `--model-name medium`.
   2. Reduce compute precision: `--compute-type int8`.
   3. Ensure no competing background processes occupy GPU memory (`nvidia-smi`).
-  4. Nemotron-3 Diarization uses only ~210 MB VRAM in FP16, so diarization itself will not trigger OOM on standard modern GPUs.
+  4. **Nemotron Activation Memory Scaling & Diarizer Fallback**: While Nemotron-3 model weights occupy only ~210 MB in FP16, Nemotron executes a single forward pass over the full audio sequence, meaning activation memory scales linearly with audio duration. On GPUs with $\le$ 8 GB VRAM (e.g. RTX 3060, 3070, or mobile GPUs), multi-hour recordings can trigger CUDA OOM during the diarization pass. For very long recordings on GPUs with $\le$ 8 GB VRAM, use the SpeechBrain ECAPA diarizer engine, which processes short windowed segments with a constant, bounded memory footprint:
+     ```bash
+     uv run a2ts run session.mp4 --diarizer-engine ecapa
+     ```
+     Alternatively, pre-split long recordings into smaller audio files or time windows before running the pipeline.
 
 ### 4.2 Nemotron Model Type Not Recognized by Transformers
 - **Symptom**: `ValueError: The checkpoint you are trying to load has model type 'nemotron3_diarization' but Transformers does not recognize this architecture`.

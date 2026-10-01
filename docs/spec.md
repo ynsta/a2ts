@@ -57,7 +57,7 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Word-level timestamp generation via attention alignment.
 - **Mistral Voxtral**:
   - Leverages Mistral AI's multimodal audio LLM (`mistralai/Voxtral-Mini-3B-2507`) via Hugging Face `transformers`.
-  - Accepts `--device` and `--compute-type` arguments (defaults to `auto` / `float16`).
+  - Accepts `--device` (default: `auto`) and `--compute-type` arguments (defaults to adaptive: `float16` on CUDA, `int8` on CPU).
   - Direct audio-context comprehension for nuanced speech patterns.
 
 ### 3.4 Acoustic Speaker Diarization
@@ -208,11 +208,17 @@ a2ts split <session_dir> <cluster_id> --at <split_time_seconds> --to <new_cluste
 ```
 
 ### 4.6 `a2ts extract-vocab`
-Scans a context directory and writes the mined lore vocabulary to standard output or a file.
+Scans a context directory, extracts candidate names and lore entities, and outputs the resulting token-budgeted prompt (formatted as comma-separated terms for Whisper biasing) to standard output. Users can inspect candidate entities in the terminal or redirect stdout to save a custom vocabulary file.
 
 ```bash
-a2ts extract-vocab [DIRECTORY] [OPTIONS]
+a2ts extract-vocab [OPTIONS]
 ```
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--context-dir` | `Path` | `contexte` | Directory containing Obsidian markdown notes |
+| `--vocab-file` | `Path` | `None` | Optional custom wordlist text file to supplement lore |
+| `--max-tokens` | `int` | `180` | Maximum token budget for the biasing prompt |
 
 ### 4.7 `a2ts info`
 Displays current environment, hardware accelerators, CUDA availability, and installed engine capabilities:
