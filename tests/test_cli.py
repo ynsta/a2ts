@@ -56,6 +56,22 @@ def test_extract_vocab_command(tmp_path: Path) -> None:
     assert "Seoni" in result.output
 
 
+def test_extract_vocab_handles_bracketed_markup(tmp_path: Path) -> None:
+    """Test extract-vocab command safely handles bracketed markup like [/bold] or [Lore Tag]."""
+    lore_file = tmp_path / "lore.md"
+    lore_file.write_text(
+        '---\naliases:\n  - "[/bold]"\n  - "[Lore Tag]"\n  - "[DM: Ilvaris]"\n---\n'
+        "Rencontre avec [[Valeros]] et [[Seoni]].\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["extract-vocab", "--context-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "[/bold]" in result.output
+    assert "[Lore Tag]" in result.output
+    assert "[DM: Ilvaris]" in result.output
+
+
 def test_extract_vocab_default_max_tokens() -> None:
     """extract_vocab command parameter max_tokens must default to 180."""
     sig = inspect.signature(extract_vocab)

@@ -725,3 +725,22 @@ def test_load_speakers_mapping_consecutive_corrupt(tmp_path: Path) -> None:
     assert backups[0].read_text(encoding="utf-8") == "{corrupt 1"
     assert backups[1].name == "speakers_mapping.corrupt.2000.json"
     assert backups[1].read_text(encoding="utf-8") == "{corrupt 2"
+
+
+def test_load_speakers_mapping_corrupt_backup_non_collision(tmp_path: Path) -> None:
+    corrupt_file = tmp_path / "speakers_mapping.json"
+    corrupt_file.write_text("{corrupt new", encoding="utf-8")
+
+    preexisting_backup = tmp_path / "speakers_mapping.corrupt.1000.json"
+    preexisting_backup.write_text("{corrupt old", encoding="utf-8")
+
+    with patch("time.time", return_value=1000.0):
+        mapping = load_speakers_mapping(corrupt_file)
+
+    assert mapping == SpeakersMapping()
+    assert preexisting_backup.exists()
+    assert preexisting_backup.read_text(encoding="utf-8") == "{corrupt old"
+
+    new_backup = tmp_path / "speakers_mapping.corrupt.1000_1.json"
+    assert new_backup.exists()
+    assert new_backup.read_text(encoding="utf-8") == "{corrupt new"

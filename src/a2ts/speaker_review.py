@@ -144,9 +144,14 @@ def load_speakers_mapping(path: Path) -> SpeakersMapping:
         data = json.loads(target_file.read_text(encoding="utf-8"))
         return SpeakersMapping.model_validate(data)
     except (json.JSONDecodeError, ValidationError, OSError, UnicodeDecodeError) as exc:
-        corrupt_backup = target_file.with_name(
-            f"{target_file.stem}.corrupt.{int(time.time())}.json"
-        )
+        ts = int(time.time())
+        corrupt_backup = target_file.with_name(f"{target_file.stem}.corrupt.{ts}.json")
+        counter = 1
+        while corrupt_backup.exists():
+            corrupt_backup = target_file.with_name(
+                f"{target_file.stem}.corrupt.{ts}_{counter}.json"
+            )
+            counter += 1
 
         logger.warning(
             "Corrupt speakers mapping at %s (%s). Backing up to %s",

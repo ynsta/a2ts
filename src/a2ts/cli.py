@@ -141,12 +141,14 @@ def resolve_session_dir(path: Path) -> Path:
         if len(sessions) == 1:
             return sessions[0]
         if len(sessions) > 1:
-            session_hashes = [s.name for s in sessions]
+            session_hashes = [escape(s.name) for s in sessions]
             console.print(
-                f"[bold red]Multiple sessions found in {sessions_dir}. Please specify a session directory: {', '.join(session_hashes)}[/bold red]"
+                f"[bold red]Multiple sessions found in {escape(str(sessions_dir))}. Please specify a session directory: {', '.join(session_hashes)}[/bold red]"
             )
             raise typer.Exit(code=1)
-        console.print(f"[bold red]No sessions found in {sessions_dir}[/bold red]")
+        console.print(
+            f"[bold red]No sessions found in {escape(str(sessions_dir))}[/bold red]"
+        )
         raise typer.Exit(code=1)
     return path
 
@@ -184,7 +186,7 @@ def info() -> None:
                     vram_info = f"{alloc_gb:.2f} GB allocated, {free_gb:.2f} GB free, {total_gb:.2f} GB total"
                 except (RuntimeError, ValueError, AttributeError, OSError):
                     vram_info = "VRAM query unavailable"
-                console.print(f"    [{i}] {dev_name} - VRAM: {vram_info}")
+                console.print(f"    [{i}] {escape(dev_name)} - VRAM: {vram_info}")
         else:
             console.print("  [dim]CUDA not available - CPU inference mode only[/dim]")
     except ImportError:
@@ -238,9 +240,9 @@ def extract_audio(
     try:
         wav_path = extract_audio_to_wav(media_file, output_dir)
     except RuntimeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        console.print(f"[bold red]{escape(str(exc))}[/bold red]")
         raise typer.Exit(code=1)
-    console.print(f"[green]Audio extracted:[/green] {wav_path}")
+    console.print(f"[green]Audio extracted:[/green] {escape(str(wav_path))}")
 
 
 @app.command()
@@ -261,7 +263,7 @@ def extract_vocab(
         entities.extend(load_wordlist_file(vocab_file))
     prompt = build_biasing_prompt(entities, max_tokens=max_tokens)
     console.print(f"[bold cyan]Extracted {len(entities)} entity mentions.[/bold cyan]")
-    console.print(f"[bold green]Biasing Prompt:[/bold green]\n{prompt}")
+    console.print(f"[bold green]Biasing Prompt:[/bold green]\n{escape(prompt)}")
 
 
 @app.command()
@@ -429,7 +431,7 @@ def run(
         diarize = False
 
     console.print(
-        f"\n[bold green]=== Starting a2ts Pipeline for {media_file.name} ===[/bold green]\n"
+        f"\n[bold green]=== Starting a2ts Pipeline for {escape(media_file.name)} ===[/bold green]\n"
     )
 
     # 1. Extract audio
@@ -439,7 +441,7 @@ def run(
     try:
         audio_path = extract_audio_to_wav(media_file, cache_dir / "audio_cache")
     except RuntimeError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        console.print(f"[bold red]{escape(str(exc))}[/bold red]")
         raise typer.Exit(code=1)
     session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -471,11 +473,13 @@ def run(
     cached_segments = load_transcript_cache(transcript_cache, trans_prov, force=force)
     if cached_segments is not None:
         console.print(
-            f"[bold cyan]Step 3: Loading cached raw transcription from {transcript_cache}...[/bold cyan]"
+            f"[bold cyan]Step 3: Loading cached raw transcription from {escape(str(transcript_cache))}...[/bold cyan]"
         )
         raw_segments = cached_segments
     else:
-        console.print(f"[bold]Step 3: Transcribing with engine '{engine}'...[/bold]")
+        console.print(
+            f"[bold]Step 3: Transcribing with engine '{escape(engine)}'...[/bold]"
+        )
         transcriber = create_transcriber(
             engine=engine,
             model_name=model_name,
@@ -641,7 +645,7 @@ def run(
 
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
-                    f"[yellow]Warning: Voice profile matching skipped: {exc}[/yellow]"
+                    f"[yellow]Warning: Voice profile matching skipped: {escape(str(exc))}[/yellow]"
                 )
 
     if is_interactive:
@@ -746,7 +750,7 @@ def run(
         raw_output = output.with_name(f"{output.stem}.raw.md")
         atomic_write_text(raw_output, raw_md)
         console.print(
-            f"[cyan]Refining transcript via agy CLI model '{refine_model}' (external LLM)...[/cyan]"
+            f"[cyan]Refining transcript via agy CLI model '{escape(refine_model)}' (external LLM)...[/cyan]"
         )
         final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
 
@@ -783,7 +787,7 @@ def run(
     )
 
     console.print(
-        f"\n[bold green]✓ Pipeline completed. Transcript saved to:[/bold green] {output}\n"
+        f"\n[bold green]✓ Pipeline completed. Transcript saved to:[/bold green] {escape(str(output))}\n"
     )
 
 
@@ -876,7 +880,9 @@ def review(
     session_dir = resolve_session_dir(session_dir)
     turns_path = session_dir / "turns.json"
     if not turns_path.is_file():
-        console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
+        console.print(
+            f"[bold red]Turns cache not found at {escape(str(turns_path))}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
@@ -946,7 +952,7 @@ def review(
         )
     if turn_embs is None:
         console.print(
-            f"[yellow]Warning: Turn embeddings not found or invalid provenance for media hash '{media_hash}'. "
+            f"[yellow]Warning: Turn embeddings not found or invalid provenance for media hash '{escape(str(media_hash))}'. "
             "Skipping voice profile matching.[/yellow]"
         )
 
@@ -984,7 +990,7 @@ def review(
 
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
-                    f"[yellow]Warning: Voice profile matching skipped in review: {exc}[/yellow]"
+                    f"[yellow]Warning: Voice profile matching skipped in review: {escape(str(exc))}[/yellow]"
                 )
 
     known_speakers = load_speaker_names(
@@ -1063,7 +1069,7 @@ def review(
                 )
             except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
                 console.print(
-                    f"[yellow]Warning: Voice profiles update skipped in review: {exc}[/yellow]"
+                    f"[yellow]Warning: Voice profiles update skipped in review: {escape(str(exc))}[/yellow]"
                 )
 
     target_output = output
@@ -1080,7 +1086,7 @@ def review(
 
     atomic_write_text(target_output, raw_md)
     console.print(
-        f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {target_output}\n"
+        f"\n[bold green]✓ Review completed. Updated transcript saved to:[/bold green] {escape(str(target_output))}\n"
     )
 
 
@@ -1100,7 +1106,9 @@ def split(
     session_dir = resolve_session_dir(session_dir)
     turns_path = session_dir / "turns.json"
     if not turns_path.is_file():
-        console.print(f"[bold red]Turns cache not found at {turns_path}[/bold red]")
+        console.print(
+            f"[bold red]Turns cache not found at {escape(str(turns_path))}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     turns_data = json.loads(turns_path.read_text(encoding="utf-8"))
@@ -1143,7 +1151,7 @@ def split(
 
     atomic_write_text(out_path, raw_md)
     console.print(
-        f"\n[bold green]✓ Cluster '{cluster_id}' split at {at}s to '{to}'. Transcript saved to:[/bold green] {out_path}\n"
+        f"\n[bold green]✓ Cluster '{escape(cluster_id)}' split at {at}s to '{escape(to)}'. Transcript saved to:[/bold green] {escape(str(out_path))}\n"
     )
 
 
@@ -1195,7 +1203,7 @@ def recluster(
     session_path = session_dir / "session.json"
     if not session_path.is_file():
         console.print(
-            f"[bold red]Session metadata not found at {session_path}[/bold red]"
+            f"[bold red]Session metadata not found at {escape(str(session_path))}[/bold red]"
         )
         raise typer.Exit(code=1)
 
@@ -1204,7 +1212,9 @@ def recluster(
             session_path.read_text(encoding="utf-8")
         )
     except (ValueError, KeyError, OSError) as exc:
-        console.print(f"[bold red]Failed to parse session metadata: {exc}[/bold red]")
+        console.print(
+            f"[bold red]Failed to parse session metadata: {escape(str(exc))}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     media_hash = session_meta.media_hash
@@ -1226,7 +1236,7 @@ def recluster(
             transcripts_cache = candidates[0]
         else:
             console.print(
-                f"[bold red]Transcripts cache not found at {transcripts_cache}[/bold red]"
+                f"[bold red]Transcripts cache not found at {escape(str(transcripts_cache))}[/bold red]"
             )
             raise typer.Exit(code=1)
 
@@ -1256,7 +1266,9 @@ def recluster(
             else:
                 raise ValueError("Unrecognized transcripts cache format")
     except (ValueError, KeyError, OSError, json.JSONDecodeError) as exc:
-        console.print(f"[bold red]Failed to load raw segments: {exc}[/bold red]")
+        console.print(
+            f"[bold red]Failed to load raw segments: {escape(str(exc))}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     expected_trans_hash: str | None = (
@@ -1303,7 +1315,7 @@ def recluster(
     )
     if seg_embs is None:
         console.print(
-            f"[bold red]Embeddings cache not found or invalid at {diarization_dir / f'{media_hash}_segment_embeddings.npy'}. "
+            f"[bold red]Embeddings cache not found or invalid at {escape(str(diarization_dir / f'{media_hash}_segment_embeddings.npy'))}. "
             "Reclustering requires valid segment embeddings from ECAPA diarization.[/bold red]"
         )
         raise typer.Exit(code=1)
@@ -1459,7 +1471,7 @@ def recluster(
     atomic_write_text(out_path, raw_md)
 
     console.print(
-        f"[bold green]✓ Re-clustered into {num_detected} speakers in {elapsed_str}. Saved to {out_path}.[/bold green]"
+        f"[bold green]✓ Re-clustered into {num_detected} speakers in {elapsed_str}. Saved to {escape(str(out_path))}.[/bold green]"
     )
 
 
@@ -1517,42 +1529,46 @@ def craig(
 ) -> None:
     """Transcribe and merge multi-track Craig Discord recordings into a unified transcript."""
     console.print(
-        f"\n[bold green]=== Starting Craig Pipeline for {recording_dir.name} ===[/bold green]\n"
+        f"\n[bold green]=== Starting Craig Pipeline for {escape(recording_dir.name)} ===[/bold green]\n"
     )
     device, compute_type = resolve_device_and_compute_type(device, compute_type)
 
     # 1. Verify recording_dir.is_dir(). Discover tracks. If empty, report error and exit with code 1.
     if not recording_dir.is_dir():
         console.print(
-            f"[bold red]Recording directory not found: {recording_dir}[/bold red]"
+            f"[bold red]Recording directory not found: {escape(str(recording_dir))}[/bold red]"
         )
         raise typer.Exit(code=1)
 
     try:
         tracks = discover_tracks(recording_dir)
     except FileNotFoundError as exc:
-        console.print(f"[bold red]{exc}[/bold red]")
+        console.print(f"[bold red]{escape(str(exc))}[/bold red]")
         raise typer.Exit(code=1)
 
     if not tracks:
         console.print(
-            f"[bold red]No Craig .flac tracks found in {recording_dir}[/bold red]"
+            f"[bold red]No Craig .flac tracks found in {escape(str(recording_dir))}[/bold red]"
         )
         raise typer.Exit(code=1)
 
     console.print(
-        f"[bold]Discovered {len(tracks)} audio tracks in {recording_dir}[/bold]"
+        f"[bold]Discovered {len(tracks)} audio tracks in {escape(str(recording_dir))}[/bold]"
     )
 
     # 2. Locate and parse speakers.md via find_speakers_file and parse_speakers_file
     spk_path = find_speakers_file(recording_dir, speakers_file)
     if speakers_file is not None and spk_path is None:
-        console.print(f"[bold red]Speakers file not found: {speakers_file}[/bold red]")
+        console.print(
+            f"[bold red]Speakers file not found: {escape(str(speakers_file))}[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     speakers = parse_speakers_file(spk_path) if spk_path is not None else {}
     if speakers:
-        console.print(f"[green]Loaded {len(speakers)} speakers from {spk_path}[/green]")
+        console.print(
+            f"[green]Loaded {len(speakers)} speakers from {escape(str(spk_path))}[/green]"
+        )
     else:
         console.print(
             "[yellow]No speakers roster file found; using track usernames.[/yellow]"
@@ -1645,7 +1661,7 @@ def craig(
         raw_output = out_path.with_name(f"{out_path.stem}.raw.md")
         atomic_write_text(raw_output, raw_md)
         console.print(
-            f"[cyan]Refining transcript via agy CLI model '{refine_model}' (external LLM)...[/cyan]"
+            f"[cyan]Refining transcript via agy CLI model '{escape(refine_model)}' (external LLM)...[/cyan]"
         )
         final_md = refine_transcript_markdown(
             raw_md, agy_model=refine_model, effort=refine_effort
@@ -1655,7 +1671,7 @@ def craig(
     atomic_write_text(out_path, final_md)
 
     console.print(
-        f"\n[bold green]✓ Craig pipeline completed. Transcript saved to:[/bold green] {out_path}\n"
+        f"\n[bold green]✓ Craig pipeline completed. Transcript saved to:[/bold green] {escape(str(out_path))}\n"
     )
 
 
