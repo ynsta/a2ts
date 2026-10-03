@@ -1,15 +1,18 @@
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from a2ts.models import RawSegment, WordTimestamp
 from a2ts.transcriber import (
+    ParakeetEngine,
     TranscriberEngine,
     VoxtralEngine,
     WhisperEngine,
     create_transcriber,
     ensure_cuda_libs,
+    ensure_pyav_compat,
     get_engine,
 )
 
@@ -275,3 +278,181 @@ def test_voxtral_engine_long_audio_warning(caplog: pytest.LogCaptureFixture) -> 
         "Voxtral is an experimental engine designed for short clips; long recordings risk truncation at 1024 tokens"
         in caplog.text
     )
+
+
+def test_ensure_pyav_compat_handles_metadata_errors() -> None:
+    import av
+
+    calls: list[dict[str, Any]] = []
+
+    def mock_orig_open(*args: Any, **kwargs: Any) -> str:
+        calls.append(kwargs.copy())
+        if "metadata_errors" in kwargs:
+            raise TypeError(
+                "open() got an unexpected keyword argument 'metadata_errors'"
+            )
+        return "success_container"
+
+    # Patch with our mock
+    with patch.object(av, "open", mock_orig_open):
+        ensure_pyav_compat()
+        # Calling av.open with metadata_errors should succeed via the compat wrapper
+        res = av.open("fake_path.wav", mode="r", metadata_errors="ignore")
+        assert res == "success_container"
+        assert len(calls) == 2
+        # First call contained metadata_errors
+        assert "metadata_errors" in calls[0]
+        # Second call had metadata_errors removed
+        assert "metadata_errors" not in calls[1]
+
+
+def test_ensure_pyav_compat_preserves_other_typeerrors() -> None:
+    import av
+
+    def mock_broken_open(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("unrelated type error")
+
+    with patch.object(av, "open", mock_broken_open):
+        ensure_pyav_compat()
+        with pytest.raises(TypeError, match="unrelated type error"):
+            av.open("fake_path.wav")
+
+
+def test_get_engine_parakeet() -> None:
+    # Default model
+    engine = get_engine("parakeet", device="cpu")
+    assert isinstance(engine, ParakeetEngine)
+    assert engine.model_name == "nvidia/parakeet-tdt-0.6b-v3"
+    assert engine.device == "cpu"
+
+    # Alias mapping for legacy/cloud NIM model name
+    engine_alias = get_engine(
+        "parakeet",
+        model_name="nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+        device="cpu",
+    )
+    assert engine_alias.model_name == "nvidia/parakeet-tdt-0.6b-v3"
+
+    # Custom model preserved
+    engine_custom = get_engine("parakeet", model_name="custom/parakeet-model", device="cpu")
+    assert engine_custom.model_name == "custom/parakeet-model"
+
+
+def test_parakeet_engine_missing_nemo_raises_importerror() -> None:
+    engine = ParakeetEngine()
+    with (
+        patch.dict(
+            "sys.modules",
+            {"nemo": None, "nemo.collections": None, "nemo.collections.asr": None},
+        ),
+        pytest.raises(ImportError, match="NVIDIA NeMo is required"),
+    ):
+        engine._load_model()
+
+
+def test_parakeet_engine_transcribe_with_timestamps() -> None:
+    from a2ts.models import SpeakerTurn
+    from a2ts.timeline import align_words_to_speaker_turns
+
+    engine = ParakeetEngine(
+        model_name="nvidia/parakeet-1.1b-rnnt-multilingual-asr", device="cpu"
+    )
+
+    mock_hyp = MagicMock()
+    mock_hyp.text = "Bonjour tout le monde"
+    mock_hyp.timestamp = {
+        "word": [
+            {"word": "Bonjour", "start": 0.5, "end": 1.0},
+            {"word": "tout", "start": 1.1, "end": 1.4},
+            {"word": "le", "start": 1.4, "end": 1.6},
+            {"word": "monde", "start": 1.6, "end": 2.2},
+        ]
+    }
+
+    mock_model = MagicMock()
+    mock_model.transcribe.return_value = [mock_hyp]
+
+    with patch.object(engine, "_load_model", return_value=mock_model):
+        results = engine.transcribe(Path("test.wav"), prompt=None, language="fr")
+
+    assert len(results) == 1
+    seg = results[0]
+    assert seg.text == "Bonjour tout le monde"
+    assert seg.start == 0.5
+    assert seg.end == 2.2
+    assert len(seg.words) == 4
+    assert seg.words[0] == WordTimestamp(
+        word="Bonjour", start=0.5, end=1.0, probability=1.0
+    )
+    assert seg.words[3] == WordTimestamp(
+        word="monde", start=1.6, end=2.2, probability=1.0
+    )
+
+    # Test alignment with speaker turns (diarization verification)
+    turns = [
+        SpeakerTurn(
+            id=0, start=0.4, end=1.05, cluster_id="SPEAKER_00", resolved_speaker="Alice"
+        ),
+        SpeakerTurn(
+            id=1, start=1.08, end=2.3, cluster_id="SPEAKER_01", resolved_speaker="Bob"
+        ),
+    ]
+    aligned = align_words_to_speaker_turns(results, turns)
+    assert len(aligned) == 2
+    assert aligned[0].speaker == "Alice"
+    assert aligned[0].text == "Bonjour"
+    assert aligned[1].speaker == "Bob"
+    assert aligned[1].text == "tout le monde"
+
+
+def test_parakeet_engine_chunked_streaming(tmp_path: Path) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    wav_file = tmp_path / "long.wav"
+    # Create 400 seconds of audio at 16kHz
+    sr = 16000
+    sf.write(wav_file, np.zeros(400 * sr, dtype=np.float32), sr)
+
+    engine = ParakeetEngine(device="cpu")
+
+    mock_hyp_chunk1 = MagicMock()
+    mock_hyp_chunk1.text = "Première partie"
+    mock_hyp_chunk1.timestamp = {
+        "word": [
+            {"word": "Première", "start": 1.0, "end": 2.0},
+            {"word": "partie", "start": 2.5, "end": 3.0},
+        ]
+    }
+
+    mock_hyp_chunk2 = MagicMock()
+    mock_hyp_chunk2.text = "Deuxième partie"
+    mock_hyp_chunk2.timestamp = {
+        "word": [
+            {"word": "Deuxième", "start_offset": 5.0, "end_offset": 6.0},
+            {"word": "partie", "start_offset": 6.5, "end_offset": 7.0},
+        ]
+    }
+
+    mock_model = MagicMock()
+    mock_model.transcribe.side_effect = [
+        [mock_hyp_chunk1],
+        [mock_hyp_chunk2],
+        [mock_hyp_chunk2],
+    ]
+
+    with patch.object(engine, "_load_model", return_value=mock_model):
+        results = engine.transcribe(wav_file, prompt=None, language="fr")
+
+    assert len(results) == 1
+    seg = results[0]
+    assert "Première partie" in seg.text
+    assert "Deuxième partie" in seg.text
+    # Words in chunk 1 (offset 0.0s)
+    assert seg.words[0].word == "Première"
+    assert seg.words[0].start == 1.0
+    # Words in chunk 2 (offset 180.0s)
+    assert seg.words[2].word == "Deuxième"
+    assert seg.words[2].start == 180.0 + 5.0
+    assert seg.words[2].end == 180.0 + 6.0
+

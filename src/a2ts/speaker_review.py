@@ -4,9 +4,12 @@ import json
 import logging
 import subprocess
 import time
+from collections.abc import Mapping as MappingType
+from collections.abc import Sequence as SequenceType
 from pathlib import Path
 from typing import Any, overload
 
+import numpy as np
 from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
@@ -14,7 +17,12 @@ from rich.prompt import Prompt
 
 from a2ts.cache import atomic_write_text
 from a2ts.media import play_audio_clip_async, stop_audio_playback
-from a2ts.models import AlignedTurn, ClusterSplit, SpeakersMapping
+from a2ts.models import (
+    AlignedTurn,
+    ClusterSplit,
+    SpeakersMapping,
+    VoiceProfilesDatabase,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -184,6 +192,10 @@ def run_interactive_review(
     min_duration: float = 0.0,
     filter_slice: int | None = None,
     mapping_path: Path | None = None,
+    voice_profiles: VoiceProfilesDatabase | None = None,
+    cluster_embeddings: MappingType[str, SequenceType[np.ndarray] | np.ndarray]
+    | None = None,
+    allowed_speakers: SequenceType[str] | None = None,
 ) -> SpeakersMapping:
     """Run interactive terminal QCM to attribute speakers."""
 
@@ -227,7 +239,9 @@ def run_interactive_review(
         for idx_sample, (t_start, sample) in enumerate(data["samples"], 1):
             m, s = divmod(int(t_start), 60)
             p_tag = (
-                f"[bold magenta][p{idx_sample}][/bold magenta] " if audio_path else ""
+                f"[bold magenta]{escape(f'[p{idx_sample}]')}[/bold magenta] "
+                if audio_path
+                else ""
             )
             console.print(
                 f'  {p_tag}• [[bold]{m:02d}:{s:02d}[/bold]] "{escape(sample)}"'
@@ -242,19 +256,33 @@ def run_interactive_review(
         console.print("\nCandidate options:")
         opts = {str(i + 1): name for i, name in enumerate(candidates[:10])}
         for idx, name in opts.items():
-            console.print(f"  [{idx}] {escape(name)}")
+            console.print(
+                f"  [bold cyan]{escape(f'[{idx}]')}[/bold cyan] {escape(name)}"
+            )
         skip_label = (
             f"Keep current ({escape(current)})" if current else "Skip (keep cluster ID)"
         )
         if audio_path:
-            console.print("  [p] Replay sample 1 audio (or type p1, p2, p3)")
             console.print(
-                "  [w] Play wider audio with extra context (or type w1, w2, w3)"
+                f"  [bold cyan]{escape('[p]')}[/bold cyan] Replay sample 1 audio (or type p1, p2, p3)"
             )
-        console.print(f"  [s] {skip_label}")
-        console.print("  [t] Review this cluster by time slices (temporal split)")
-        console.print("  [c] Type custom name (or type speaker name directly)")
-        console.print("  [q] Quit review and save progress")
+            console.print(
+                f"  [bold cyan]{escape('[w]')}[/bold cyan] Play wider audio with extra context (or type w1, w2, w3)"
+            )
+        console.print(f"  [bold cyan]{escape('[s]')}[/bold cyan] {skip_label}")
+        console.print(
+            f"  [bold cyan]{escape('[t]')}[/bold cyan] Review this cluster by time slices (temporal split)"
+        )
+        console.print(
+            f"  [bold cyan]{escape('[c]')}[/bold cyan] Type custom name (or type speaker name directly)"
+        )
+        if cluster_embeddings:
+            console.print(
+                f"  [bold cyan]{escape('[a]')}[/bold cyan] Auto-assign all remaining clusters to nearest speaker"
+            )
+        console.print(
+            f"  [bold cyan]{escape('[q]')}[/bold cyan] Quit review and save progress"
+        )
 
         active_proc: subprocess.Popen[bytes] | None = None
         if auto_play and audio_path and sample_turns:
@@ -272,9 +300,28 @@ def run_interactive_review(
                 pad_after=audio_padding,
             )
 
+        p_lbl = escape("[p]")
+        w_lbl = escape("[w]")
+        s_lbl = escape("[s]")
+        t_lbl = escape("[t]")
+        q_lbl = escape("[q]")
+        a_lbl = escape("[a]")
+        auto_text = (
+            f"[bold cyan]{a_lbl}[/bold cyan]uto-assign, " if cluster_embeddings else ""
+        )
+        prompt_msg = (
+            f"Attribution choice (number, custom name, "
+            f"[bold cyan]{p_lbl}[/bold cyan]lay, "
+            f"[bold cyan]{w_lbl}[/bold cyan]ide, "
+            f"[bold cyan]{s_lbl}[/bold cyan]kip, "
+            f"[bold cyan]{t_lbl}[/bold cyan]ime-slice, "
+            f"{auto_text}or "
+            f"[bold cyan]{q_lbl}[/bold cyan]uit)"
+        )
+
         while True:
             raw_choice = Prompt.ask(
-                "Attribution choice (number, custom name, [p]lay, [w]ide, [s]kip, [t]ime-slice, or [q]uit)",
+                prompt_msg,
                 default="s",
             ).strip()
             stop_audio_playback(active_proc)
@@ -282,6 +329,78 @@ def run_interactive_review(
             choice_lower = raw_choice.lower()
             if choice_lower in ("q", "quit", "exit"):
                 console.print("[dim]Exited review early. Saving progress...[/dim]\n")
+                return mapping
+            if choice_lower in ("a", "auto"):
+                if not cluster_embeddings:
+                    console.print(
+                        "[yellow]Audio embeddings unavailable for auto-assignment.[/yellow]"
+                    )
+                    continue
+                from a2ts.diarizer import classify_clusters_to_profiles
+                from a2ts.models import VoiceProfile
+
+                target_db = (
+                    voice_profiles.model_copy(deep=True)
+                    if voice_profiles is not None
+                    else VoiceProfilesDatabase()
+                )
+
+                # For every cluster currently assigned to a named speaker, collect embeddings to compute centroids
+                spk_to_embs: dict[str, list[np.ndarray]] = {}
+                for assigned_cid, spk_name in mapping.cluster_defaults.items():
+                    if spk_name and not spk_name.startswith("SPEAKER_"):
+                        c_embs = cluster_embeddings.get(assigned_cid, [])
+                        if len(c_embs) > 0:
+                            spk_to_embs.setdefault(spk_name, []).extend(c_embs)
+
+                for spk_name, embs in spk_to_embs.items():
+                    if len(embs) > 0:
+                        arr = np.asarray(embs, dtype=np.float32)
+                        mean_vec = np.mean(arr, axis=0)
+                        norm = float(np.linalg.norm(mean_vec))
+                        if norm > 0:
+                            mean_vec = mean_vec / norm
+                        if spk_name in target_db.speakers:
+                            exist_centroid = np.asarray(
+                                target_db.speakers[spk_name].centroid, dtype=np.float32
+                            )
+                            combined = (exist_centroid + mean_vec) / 2.0
+                            c_norm = float(np.linalg.norm(combined))
+                            if c_norm > 0:
+                                combined = combined / c_norm
+                            target_db.speakers[spk_name].centroid = combined.tolist()
+                        else:
+                            target_db.speakers[spk_name] = VoiceProfile(
+                                speaker_name=spk_name,
+                                centroid=mean_vec.tolist(),
+                                sample_count=len(embs),
+                                sample_ids=[],
+                            )
+
+                if not target_db.speakers:
+                    console.print(
+                        "[yellow]No known speaker profiles or assigned clusters to match against.[/yellow]"
+                    )
+                    continue
+
+                matches = classify_clusters_to_profiles(
+                    cluster_embeddings,
+                    target_db,
+                    closed_set=True,
+                    allowed_speakers=allowed_speakers,
+                )
+                assigned_count = 0
+                for rem_cid, (best_spk, score) in matches.items():
+                    curr = mapping.cluster_defaults.get(rem_cid)
+                    if not curr or curr.startswith("SPEAKER_"):
+                        mapping.cluster_defaults[rem_cid] = best_spk
+                        mapping.label_sources[rem_cid] = "profile_match"
+                        assigned_count += 1
+
+                _persist_progress()
+                console.print(
+                    f"\n[bold green]✓ Auto-assigned {assigned_count} remaining clusters to nearest speaker signature.[/bold green]\n"
+                )
                 return mapping
             is_wide = choice_lower in (
                 "w",
@@ -374,7 +493,7 @@ def run_interactive_review(
                         sm, ss = divmod(int(sample_turn.start), 60)
                         sh, sm = divmod(sm, 60)
                         p_tag = (
-                            f"[bold magenta][p{i_s}][/bold magenta] "
+                            f"[bold magenta]{escape(f'[p{i_s}]')}[/bold magenta] "
                             if audio_path
                             else ""
                         )
@@ -387,11 +506,20 @@ def run_interactive_review(
                     )
                     if audio_path:
                         console.print(
-                            "  [p] Replay slice sample 1 audio (or type p1, p2, p3)"
+                            f"  [bold cyan]{escape('[p]')}[/bold cyan] Replay slice sample 1 audio (or type p1, p2, p3)"
                         )
                         console.print(
-                            "  [w] Play wider slice audio context (or type w1, w2, w3)"
+                            f"  [bold cyan]{escape('[w]')}[/bold cyan] Play wider slice audio context (or type w1, w2, w3)"
                         )
+                    console.print(
+                        f"  [bold cyan]{escape('[s]')}[/bold cyan] Skip (keep {escape(curr_str)})"
+                    )
+                    console.print(
+                        f"  [bold cyan]{escape('[c]')}[/bold cyan] Type custom name (or type speaker name directly)"
+                    )
+                    console.print(
+                        f"  [bold cyan]{escape('[q]')}[/bold cyan] Quit slice review"
+                    )
 
                     slice_proc: subprocess.Popen[bytes] | None = None
                     if auto_play and audio_path and slice_samples:
@@ -409,9 +537,17 @@ def run_interactive_review(
                             pad_after=audio_padding,
                         )
 
+                    slice_prompt_msg = (
+                        f"Attribution for Slice {slice_id} (number, custom name, "
+                        f"[bold cyan]{p_lbl}[/bold cyan]lay, "
+                        f"[bold cyan]{w_lbl}[/bold cyan]ide, "
+                        f"[bold cyan]{s_lbl}[/bold cyan]kip, or "
+                        f"[bold cyan]{q_lbl}[/bold cyan]uit)"
+                    )
+
                     while True:
                         slice_choice = Prompt.ask(
-                            f"Attribution for Slice {slice_id} (number, custom name, [p]lay, [w]ide, [s]kip, or [q]uit)",
+                            slice_prompt_msg,
                             default="s",
                         ).strip()
                         stop_audio_playback(slice_proc)

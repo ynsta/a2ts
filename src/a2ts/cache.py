@@ -104,6 +104,7 @@ def load_transcript_cache(
             and p.model_name == expected_provenance.model_name
             and p.compute_type == expected_provenance.compute_type
             and p.prompt_hash == expected_provenance.prompt_hash
+            and getattr(p, "language", "fr") == expected_provenance.language
         ):
             return cached.segments
         return None

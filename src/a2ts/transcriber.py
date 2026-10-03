@@ -40,6 +40,43 @@ def ensure_cuda_libs() -> None:
                             continue
 
 
+def ensure_pyav_compat() -> None:
+    """Ensure PyAV compatibility with faster-whisper.
+
+    PyAV >= 19.0.0 removed the 'metadata_errors' and 'metadata_encoding' parameters
+    from av.open(). faster-whisper passes metadata_errors='ignore', which causes a
+    TypeError on PyAV >= 19.0.0.
+    We wrap av.open to strip metadata_errors and metadata_encoding if rejected with TypeError.
+    """
+    try:
+        import av
+    except ImportError:
+        return
+
+    orig_open = av.open
+    if getattr(orig_open, "_a2ts_compat", False):
+        return
+
+    def _safe_av_open(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return orig_open(*args, **kwargs)
+        except TypeError as err:
+            err_msg = str(err)
+            if "metadata_errors" in err_msg or "metadata_encoding" in err_msg:
+                kwargs.pop("metadata_errors", None)
+                kwargs.pop("metadata_encoding", None)
+                return orig_open(*args, **kwargs)
+            raise
+
+    _safe_av_open._a2ts_compat = True  # type: ignore[attr-defined]
+    _safe_av_open._orig_open = orig_open  # type: ignore[attr-defined]
+    av.open = _safe_av_open
+
+
+# Apply PyAV compatibility eagerly on module import if PyAV is installed
+ensure_pyav_compat()
+
+
 class TranscriberEngine(Protocol):
     """Protocol defining the transcription engine interface."""
 
@@ -71,6 +108,7 @@ class WhisperEngine:
     def _get_model(self) -> Any:
         if self._model is None:
             ensure_cuda_libs()
+            ensure_pyav_compat()
             from faster_whisper import WhisperModel  # type: ignore[import-untyped]
 
             with console.status(
@@ -329,6 +367,187 @@ class VoxtralEngine:
         ]
 
 
+class ParakeetEngine:
+    """NVIDIA NeMo Parakeet ASR engine with RNN-T / TDT multilingual support."""
+
+    def __init__(
+        self,
+        model_name: str = "nvidia/parakeet-tdt-0.6b-v3",
+        device: str = "auto",
+        compute_type: str = "float16",
+    ) -> None:
+        if model_name in (
+            "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+            "parakeet-1.1b-rnnt-multilingual-asr",
+        ):
+            model_name = "nvidia/parakeet-tdt-0.6b-v3"
+        self.model_name = model_name
+        self.device = device
+        self.compute_type = compute_type
+        self._model: Any = None
+
+    def _load_model(self) -> Any:
+        if self._model is None:
+            ensure_cuda_libs()
+            try:
+                import nemo.collections.asr as nemo_asr  # type: ignore[import-not-found,import-untyped]
+                import torch
+            except (ImportError, ModuleNotFoundError):
+                raise ImportError(
+                    "NVIDIA NeMo is required for the Parakeet engine. "
+                    "Install it with: uv sync --extra parakeet (or: uv tool install --editable '.[parakeet]' --reinstall)"
+                ) from None
+
+            with console.status(
+                f"[bold cyan]Loading NeMo Parakeet model '{self.model_name}'...[/bold cyan]",
+                spinner="dots",
+            ):
+                try:
+                    model_cls = getattr(
+                        nemo_asr.models, "EncDecRNNTBPEModel", nemo_asr.models.ASRModel
+                    )
+                    self._model = model_cls.from_pretrained(model_name=self.model_name)
+                except (AttributeError, RuntimeError, ValueError):
+                    self._model = nemo_asr.models.ASRModel.from_pretrained(
+                        model_name=self.model_name
+                    )
+
+                if self.device in ("cuda", "auto") and torch.cuda.is_available():
+                    self._model = self._model.cuda()
+                    if self.compute_type in ("float16", "fp16") and hasattr(
+                        self._model, "half"
+                    ):
+                        self._model = self._model.half()
+                else:
+                    self._model = self._model.cpu()
+
+                self._model.eval()
+
+            console.print(f"[green]✓ Parakeet '{self.model_name}' loaded.[/green]")
+        return self._model
+
+    def transcribe(
+        self,
+        audio_path: Path,
+        prompt: str | None = None,
+        language: str = "fr",
+        duration: float | None = None,
+    ) -> list[RawSegment]:
+        """Transcribe audio using NeMo Parakeet model with word timestamps and safe audio chunking."""
+        import numpy as np
+        import soundfile as sf
+
+        model = self._load_model()
+
+        resolved_audio = audio_path.resolve()
+        try:
+            info = sf.info(str(resolved_audio))
+            total_duration = float(info.duration)
+            sr = info.samplerate
+            total_samples = info.frames
+        except (RuntimeError, OSError, ValueError):
+            total_duration = duration or 0.0
+            sr = 16000
+            total_samples = 0
+
+        # Chunk audio into 180s (3 min) slices to prevent CUDA STFT allocation overflow on long files
+        chunk_seconds = 180.0
+        all_words: list[WordTimestamp] = []
+        text_parts: list[str] = []
+
+        with console.status(
+            "[bold blue]Transcribing (Parakeet TDT)...[/bold blue]",
+            spinner="dots",
+        ):
+            chunks_data: list[tuple[Any, float]] = []
+            if total_samples == 0:
+                try:
+                    outputs = model.transcribe(
+                        [str(resolved_audio)],
+                        timestamps=True,
+                        return_hypotheses=True,
+                    )
+                except TypeError:
+                    outputs = model.transcribe([str(resolved_audio)])
+                chunks_data.append((outputs, 0.0))
+            else:
+                chunk_samples = int(chunk_seconds * sr)
+                with sf.SoundFile(str(resolved_audio)) as f:
+                    while True:
+                        offset_samples = f.tell()
+                        if offset_samples >= total_samples:
+                            break
+                        offset_sec = float(offset_samples) / sr
+                        data = f.read(frames=chunk_samples, dtype="float32")
+                        if len(data) == 0:
+                            break
+                        if data.ndim > 1:
+                            data = np.mean(data, axis=1)
+
+                        try:
+                            outputs = model.transcribe(
+                                [data],
+                                timestamps=True,
+                                return_hypotheses=True,
+                            )
+                        except TypeError:
+                            outputs = model.transcribe([data])
+
+                        chunks_data.append((outputs, offset_sec))
+
+            for outputs, offset_sec in chunks_data:
+                if not outputs:
+                    continue
+                hyp = outputs[0]
+                if hasattr(hyp, "text"):
+                    chunk_text = str(hyp.text).strip()
+                elif isinstance(hyp, dict):
+                    chunk_text = str(hyp.get("text", "")).strip()
+                else:
+                    chunk_text = str(hyp).strip()
+
+                if chunk_text:
+                    text_parts.append(chunk_text)
+
+                timestamps_dict = getattr(hyp, "timestamp", None)
+                if isinstance(hyp, dict) and timestamps_dict is None:
+                    timestamps_dict = hyp.get("timestamp")
+
+                if timestamps_dict and isinstance(timestamps_dict, dict):
+                    word_stamps = timestamps_dict.get("word") or []
+                    for w in word_stamps:
+                        if isinstance(w, dict):
+                            w_text = w.get("word", "")
+                            w_start = offset_sec + float(w.get("start", w.get("start_offset", 0.0)))
+                            w_end = offset_sec + float(w.get("end", w.get("end_offset", 0.0)))
+                        else:
+                            w_text = getattr(w, "word", "")
+                            w_start = offset_sec + float(getattr(w, "start", getattr(w, "start_offset", 0.0)))
+                            w_end = offset_sec + float(getattr(w, "end", getattr(w, "end_offset", 0.0)))
+                        all_words.append(
+                            WordTimestamp(
+                                word=str(w_text).strip(),
+                                start=w_start,
+                                end=w_end,
+                                probability=1.0,
+                            )
+                        )
+
+        full_text = " ".join(text_parts)
+        start_time = all_words[0].start if all_words else 0.0
+        end_time = all_words[-1].end if all_words else (total_duration or duration or 0.0)
+
+        return [
+            RawSegment(
+                id=0,
+                start=start_time,
+                end=end_time,
+                text=full_text,
+                words=all_words,
+            )
+        ]
+
+
 def get_engine(engine_type: str, **kwargs: Any) -> TranscriberEngine:
     """Factory creating configured TranscriberEngine instance."""
     normalized = engine_type.lower().strip()
@@ -336,7 +555,11 @@ def get_engine(engine_type: str, **kwargs: Any) -> TranscriberEngine:
         return WhisperEngine(**kwargs)
     elif normalized == "voxtral":
         return VoxtralEngine(**kwargs)
-    raise ValueError(f"Unknown engine: {engine_type}. Expected 'voxtral' or 'whisper'.")
+    elif normalized == "parakeet":
+        return ParakeetEngine(**kwargs)
+    raise ValueError(
+        f"Unknown engine: {engine_type}. Expected 'parakeet', 'voxtral' or 'whisper'."
+    )
 
 
 def create_transcriber(

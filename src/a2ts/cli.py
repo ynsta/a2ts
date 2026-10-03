@@ -208,6 +208,15 @@ def info() -> None:
     except (ImportError, AttributeError):
         console.print("  • [yellow]Voxtral:[/yellow] Not available (optional)")
 
+    try:
+        import nemo.collections.asr as nemo_asr  # type: ignore[import-not-found,import-untyped] # noqa: F401
+
+        console.print("  • [green]Parakeet:[/green] Available (NVIDIA NeMo)")
+    except (ImportError, AttributeError):
+        console.print(
+            "  • [yellow]Parakeet:[/yellow] Not available (optional: pip install 'nemo_toolkit[asr]')"
+        )
+
     # Diarization Engines
     console.print("\n[bold]Diarization Engines:[/bold]")
     try:
@@ -272,7 +281,7 @@ def run(
         Path, typer.Argument(help="Path to audio or video media file")
     ],
     engine: Annotated[
-        str, typer.Option(help="Transcription engine: voxtral or whisper")
+        str, typer.Option(help="Transcription engine: parakeet, voxtral, or whisper")
     ] = "whisper",
     model_name: Annotated[
         str | None, typer.Option(help="Model name or path for engine")
@@ -286,6 +295,14 @@ def run(
             help="Computation type (float16/int8/etc.) [default: auto (float16 on cuda, int8 on cpu)]"
         ),
     ] = None,
+    language: Annotated[
+        str,
+        typer.Option(
+            "--language",
+            "-l",
+            help="Spoken language code for transcription (e.g. 'fr', 'en'). Note: ignored by the Parakeet engine which uses automatic language detection only.",
+        ),
+    ] = "fr",
     context_dir: Annotated[
         Path, typer.Option(help="Directory containing Obsidian notes")
     ] = Path("contexte"),
@@ -333,7 +350,7 @@ def run(
     speakers: Annotated[
         str | None,
         typer.Option(
-            help="Comma-separated list of known speaker names (e.g. 'MJ, Brakk, Oskel')"
+            help="Comma-separated list of known speaker names (e.g. 'Alice, Bob, Charlie, GM')"
         ),
     ] = None,
     speakers_file: Annotated[
@@ -430,6 +447,11 @@ def run(
         )
         diarize = False
 
+    if engine.lower().strip() == "parakeet" and language.lower().strip() != "fr":
+        console.print(
+            f"[bold yellow]Warning: The Parakeet engine uses automatic language detection only and ignores explicit language configuration (requested: '{escape(language)}').[/bold yellow]"
+        )
+
     console.print(
         f"\n[bold green]=== Starting a2ts Pipeline for {escape(media_file.name)} ===[/bold green]\n"
     )
@@ -458,8 +480,21 @@ def run(
     transcript_cache = transcripts_dir / f"{file_hash}_{engine}.json"
 
     resolved_model_name = model_name or (
-        "large-v3" if engine == "whisper" else "mistralai/Voxtral-Mini-3B-2507"
+        "large-v3"
+        if engine == "whisper"
+        else "nvidia/parakeet-tdt-0.6b-v3"
+        if engine == "parakeet"
+        else "mistralai/Voxtral-Mini-3B-2507"
     )
+    if resolved_model_name in (
+        "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+        "parakeet-1.1b-rnnt-multilingual-asr",
+    ):
+        console.print(
+            "[cyan]Mapping 'parakeet-1.1b-rnnt-multilingual-asr' to official open-weights multilingual model 'nvidia/parakeet-tdt-0.6b-v3'...[/cyan]"
+        )
+        resolved_model_name = "nvidia/parakeet-tdt-0.6b-v3"
+
     prompt_hash = compute_prompt_hash(prompt)
 
     trans_prov = TranscriptCacheProvenance(
@@ -468,6 +503,7 @@ def run(
         model_name=resolved_model_name,
         compute_type=compute_type,
         prompt_hash=prompt_hash,
+        language=language,
     )
 
     cached_segments = load_transcript_cache(transcript_cache, trans_prov, force=force)
@@ -480,13 +516,16 @@ def run(
         console.print(
             f"[bold]Step 3: Transcribing with engine '{escape(engine)}'...[/bold]"
         )
+        passed_model_name = (
+            resolved_model_name if model_name is not None else None
+        )
         transcriber = create_transcriber(
             engine=engine,
-            model_name=model_name,
+            model_name=passed_model_name,
             device=device,
             compute_type=compute_type,
         )
-        raw_segments = transcriber.transcribe(audio_path, prompt=prompt)
+        raw_segments = transcriber.transcribe(audio_path, prompt=prompt, language=language)
         if any(getattr(seg, "is_truncated", False) for seg in raw_segments):
             console.print(
                 "[yellow]Warning: Output was truncated; skipping persistent transcript cache to prevent replaying incomplete transcript.[/yellow]"
@@ -503,7 +542,7 @@ def run(
     resolved_diarizer_engine: str
     if diarizer_engine == "auto":
         is_cuda_avail = False
-        if device == "cuda":
+        if device in ("cuda", "auto"):
             try:
                 import torch
 
@@ -581,7 +620,19 @@ def run(
         ),
     )
 
+    known_speakers = load_speaker_names(
+        speakers_file=speakers_file,
+        speakers_arg=speakers,
+        context_dir=context_dir,
+    )
+    allowed_speakers = (
+        [s.strip() for s in speakers.split(",") if s.strip()]
+        if speakers
+        else (known_speakers if known_speakers else None)
+    )
+
     loaded_db: VoiceProfilesDatabase | None = None
+    cluster_embs: dict[str, list[np.ndarray]] = {}
     if voice_profiles.is_file() and diarize:
         loaded_db = load_voice_profiles(voice_profiles)
         turn_embs: tuple[np.ndarray, list[int]] | None = None
@@ -623,7 +674,6 @@ def run(
                     seg_to_cluster = {
                         turn.id: turn.cluster_id for turn in speaker_turns
                     }
-                    cluster_embs: dict[str, list[np.ndarray]] = {}
                     for idx_emb, seg_idx in enumerate(valid_indices):
                         cid = seg_to_cluster.get(seg_idx)
                         if cid is not None:
@@ -634,6 +684,7 @@ def run(
                         loaded_db,
                         similarity_threshold=profile_threshold,
                         closed_set=closed_set,
+                        allowed_speakers=allowed_speakers,
                     )
                     for cid, (best_spk, score) in cluster_matches.items():
                         if cid not in mapping.cluster_defaults:
@@ -649,11 +700,6 @@ def run(
                 )
 
     if is_interactive:
-        known_speakers = load_speaker_names(
-            speakers_file=speakers_file,
-            speakers_arg=speakers,
-            context_dir=context_dir,
-        )
         profile_speakers = list(loaded_db.speakers.keys()) if loaded_db else []
         candidate_names = list(
             dict.fromkeys(
@@ -682,6 +728,9 @@ def run(
             min_duration=review_min_duration,
             filter_slice=review_time_slice,
             mapping_path=mapping_path,
+            voice_profiles=loaded_db,
+            cluster_embeddings=cluster_embs,
+            allowed_speakers=allowed_speakers,
         )
         for cid, val in mapping.cluster_defaults.items():
             if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
@@ -766,8 +815,17 @@ def run(
             duration = max(s.end for s in raw_segments)
 
     resolved_model_name = model_name or (
-        "large-v3" if engine == "whisper" else "mistralai/Voxtral-Mini-3B-2507"
+        "large-v3"
+        if engine == "whisper"
+        else "nvidia/parakeet-tdt-0.6b-v3"
+        if engine == "parakeet"
+        else "mistralai/Voxtral-Mini-3B-2507"
     )
+    if resolved_model_name in (
+        "nvidia/parakeet-1.1b-rnnt-multilingual-asr",
+        "parakeet-1.1b-rnnt-multilingual-asr",
+    ):
+        resolved_model_name = "nvidia/parakeet-tdt-0.6b-v3"
     prompt_hash = compute_prompt_hash(prompt)
     session_meta = SessionMetadata(
         media_path=str(media_file),
@@ -817,7 +875,7 @@ def review(
     speakers: Annotated[
         str | None,
         typer.Option(
-            help="Comma-separated list of known speaker names (e.g. 'MJ, Brakk, Oskel')"
+            help="Comma-separated list of known speaker names (e.g. 'Alice, Bob, Charlie, GM')"
         ),
     ] = None,
     speakers_file: Annotated[
@@ -875,6 +933,13 @@ def review(
             help="Only review clusters within specific time slice ID",
         ),
     ] = None,
+    interactive: Annotated[
+        bool,
+        typer.Option(
+            "--interactive/--no-interactive",
+            help="Enable interactive QCM speaker review [default: True]",
+        ),
+    ] = True,
 ) -> None:
     """Re-run interactive speaker review on cached session turns."""
     session_dir = resolve_session_dir(session_dir)
@@ -956,14 +1021,25 @@ def review(
             "Skipping voice profile matching.[/yellow]"
         )
 
+    known_speakers = load_speaker_names(
+        speakers_file=speakers_file,
+        speakers_arg=speakers,
+        context_dir=context_dir,
+    )
+    allowed_speakers = (
+        [s.strip() for s in speakers.split(",") if s.strip()]
+        if speakers
+        else (known_speakers if known_speakers else None)
+    )
+
     loaded_vp: VoiceProfilesDatabase | None = None
+    cluster_embs: dict[str, list[np.ndarray]] = {}
     if voice_profiles.is_file():
         loaded_vp = load_voice_profiles(voice_profiles)
         if loaded_vp and loaded_vp.speakers and turn_embs is not None:
             try:
                 embeddings, valid_indices = turn_embs
                 turn_by_id = {t.turn_id: t for t in turns}
-                cluster_embs: dict[str, list[np.ndarray]] = {}
                 for idx_emb, tid in enumerate(valid_indices):
                     matched_turn = turn_by_id.get(tid)
                     if matched_turn is not None:
@@ -979,6 +1055,7 @@ def review(
                     loaded_vp,
                     similarity_threshold=profile_threshold,
                     closed_set=closed_set,
+                    allowed_speakers=allowed_speakers,
                 )
                 for cid, (best_spk, score) in cluster_matches.items():
                     if cid not in mapping.cluster_defaults:
@@ -993,11 +1070,6 @@ def review(
                     f"[yellow]Warning: Voice profile matching skipped in review: {escape(str(exc))}[/yellow]"
                 )
 
-    known_speakers = load_speaker_names(
-        speakers_file=speakers_file,
-        speakers_arg=speakers,
-        context_dir=context_dir,
-    )
     profile_speakers: list[str] = list(loaded_vp.speakers.keys()) if loaded_vp else []
     candidate_names: list[str] = list(
         dict.fromkeys(
@@ -1012,20 +1084,24 @@ def review(
     if cluster:
         filter_clusters = [c.strip() for c in cluster.split(",") if c.strip()]
 
-    mapping = run_interactive_review(
-        turns,
-        candidate_names,
-        existing_mapping=mapping,
-        audio_path=audio_path,
-        auto_play=auto_play,
-        audio_padding=audio_padding,
-        filter_clusters=filter_clusters,
-        unassigned_only=unassigned_only,
-        min_turns=min_turns,
-        min_duration=min_duration,
-        filter_slice=time_slice,
-        mapping_path=mapping_path,
-    )
+    if interactive:
+        mapping = run_interactive_review(
+            turns,
+            candidate_names,
+            existing_mapping=mapping,
+            audio_path=audio_path,
+            auto_play=auto_play,
+            audio_padding=audio_padding,
+            filter_clusters=filter_clusters,
+            unassigned_only=unassigned_only,
+            min_turns=min_turns,
+            min_duration=min_duration,
+            filter_slice=time_slice,
+            mapping_path=mapping_path,
+            voice_profiles=loaded_vp,
+            cluster_embeddings=cluster_embs,
+            allowed_speakers=allowed_speakers,
+        )
     for cid, val in mapping.cluster_defaults.items():
         if cid not in mapping.label_sources and not val.startswith("SPEAKER_"):
             mapping.label_sources[cid] = "manual"
@@ -1197,6 +1273,22 @@ def recluster(
             help="In closed-set mode, map all clusters to nearest enrolled voice profile and propagate labels",
         ),
     ] = False,
+    speakers: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated list of known speaker names to constrain matching (e.g. 'Alice, Bob, Charlie, GM')"
+        ),
+    ] = None,
+    speakers_file: Annotated[
+        Path | None,
+        typer.Option(
+            help="Path to speakers text file (default auto-detects contexte/speakers.txt)"
+        ),
+    ] = None,
+    context_dir: Annotated[
+        Path,
+        typer.Option(help="Directory containing Obsidian notes and speakers.txt"),
+    ] = Path("contexte"),
 ) -> None:
     """Re-cluster cached speaker embeddings and regenerate transcript."""
     session_dir = resolve_session_dir(session_dir)
@@ -1436,11 +1528,22 @@ def recluster(
                     cid = matched_turn.cluster_id
                     cluster_embs.setdefault(cid, []).append(emb_matrix[idx_emb])
 
+            known_speakers = load_speaker_names(
+                speakers_file=speakers_file,
+                speakers_arg=speakers,
+                context_dir=context_dir,
+            )
+            allowed_speakers = (
+                [s.strip() for s in speakers.split(",") if s.strip()]
+                if speakers
+                else (known_speakers if known_speakers else None)
+            )
             cluster_matches = classify_clusters_to_profiles(
                 cluster_embs,
                 loaded_db,
                 similarity_threshold=profile_threshold,
                 closed_set=closed_set,
+                allowed_speakers=allowed_speakers,
             )
             for cid, (best_spk, score) in cluster_matches.items():
                 if cid not in mapping.cluster_defaults:
@@ -1490,6 +1593,14 @@ def craig(
             help="Computation type (float16/int8/etc.) [default: auto (float16 on cuda, int8 on cpu)]"
         ),
     ] = None,
+    language: Annotated[
+        str,
+        typer.Option(
+            "--language",
+            "-l",
+            help="Spoken language code for transcription (e.g. 'fr', 'en')",
+        ),
+    ] = "fr",
     context_dir: Annotated[
         Path | None, typer.Option(help="Directory containing Obsidian markdown notes")
     ] = Path("contexte"),
@@ -1620,6 +1731,7 @@ def craig(
             model_name=model_name,
             compute_type=compute_type,
             prompt_hash=prompt_hash,
+            language=language,
         )
         cache_path = cache_dir / f"{track.stem}.json"
         cached_segments = load_track_cache(cache_path, prov, force=force)

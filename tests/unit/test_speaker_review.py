@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from a2ts.models import AlignedTurn, SpeakersMapping
@@ -744,3 +745,116 @@ def test_load_speakers_mapping_corrupt_backup_non_collision(tmp_path: Path) -> N
     new_backup = tmp_path / "speakers_mapping.corrupt.1000_1.json"
     assert new_backup.exists()
     assert new_backup.read_text(encoding="utf-8") == "{corrupt new"
+
+
+def test_interactive_review_prompts_and_options_escape_brackets(tmp_path: Path) -> None:
+    from rich.text import Text
+
+    from a2ts.speaker_review import console
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=115.0,
+            end=120.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Ouais.",
+        ),
+    ]
+    candidates = ["MJ (Arghun)", "Grolm"]
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+
+    printed_lines: list[str] = []
+    prompts_asked: list[str] = []
+
+    def mock_print(*args: Any, **kwargs: Any) -> None:
+        for a in args:
+            rendered = console.render_str(str(a))
+            printed_lines.append(rendered.plain)
+
+    def mock_ask(prompt: str, default: str = "") -> str:
+        prompts_asked.append(prompt)
+        return "q"
+
+    with (
+        patch.object(console, "print", side_effect=mock_print),
+        patch("a2ts.speaker_review.Prompt.ask", side_effect=mock_ask),
+    ):
+        run_interactive_review(
+            turns, candidates, audio_path=audio_path, auto_play=False
+        )
+
+    full_output = "\n".join(printed_lines)
+    # Check [p1] is present and not stripped
+    assert "[p1]" in full_output
+    # Check hotkey options are present and not stripped
+    assert "[1]" in full_output
+    assert "[p]" in full_output
+    assert "[w]" in full_output
+    assert "[s]" in full_output
+    assert "[t]" in full_output
+    assert "[c]" in full_output
+    assert "[q]" in full_output
+
+    # Check prompt message contains the full hotkeys in plain text
+    assert len(prompts_asked) > 0
+    prompt_plain = Text.from_markup(prompts_asked[0]).plain
+    assert "[p]lay" in prompt_plain
+    assert "[w]ide" in prompt_plain
+    assert "[s]kip" in prompt_plain
+    assert "[t]ime-slice" in prompt_plain
+    assert "[q]uit" in prompt_plain
+
+
+def test_interactive_review_auto_assign() -> None:
+    import numpy as np
+
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=2.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Turn 1",
+        ),
+        AlignedTurn(
+            turn_id=1,
+            start=3.0,
+            end=5.0,
+            speaker="SPEAKER_01",
+            cluster_id="SPEAKER_01",
+            text="Turn 2",
+        ),
+    ]
+    vp = VoiceProfilesDatabase(
+        speakers={
+            "Alice": VoiceProfile(speaker_name="Alice", centroid=[1.0, 0.0]),
+            "Bob": VoiceProfile(speaker_name="Bob", centroid=[0.0, 1.0]),
+            "Charlie": VoiceProfile(speaker_name="Charlie", centroid=[-1.0, 0.0]),
+        }
+    )
+    cluster_embs = {
+        "SPEAKER_00": [np.array([0.9, 0.1], dtype=np.float32)],
+        "SPEAKER_01": [np.array([0.1, 0.9], dtype=np.float32)],
+    }
+
+    # User inputs 'a' to auto-assign
+    with patch("a2ts.speaker_review.Prompt.ask", return_value="a"):
+        mapping = run_interactive_review(
+            turns,
+            candidates=["Alice", "Bob", "Charlie"],
+            voice_profiles=vp,
+            cluster_embeddings=cluster_embs,
+            allowed_speakers=["Alice", "Bob"],  # Charlie excluded
+            auto_play=False,
+        )
+
+    assert mapping.cluster_defaults["SPEAKER_00"] == "Alice"
+    assert mapping.cluster_defaults["SPEAKER_01"] == "Bob"
+    assert mapping.label_sources["SPEAKER_00"] == "profile_match"
+    assert mapping.label_sources["SPEAKER_01"] == "profile_match"

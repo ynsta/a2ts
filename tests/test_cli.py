@@ -1842,8 +1842,60 @@ def test_info_command_diagnostics() -> None:
     assert "CUDA" in result.output
     assert "Faster-Whisper" in result.output
     assert "Voxtral" in result.output
+    assert "Parakeet" in result.output
     assert "SpeechBrain ECAPA" in result.output
     assert "Nemotron" in result.output
+
+
+def test_run_parakeet_with_diarization(
+    tmp_path: Path,
+) -> None:
+    """Parakeet engine with --diarize preserves acoustic diarization and word timestamps."""
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"dummy video data for hash")
+    out_file = tmp_path / "out.md"
+    cache_dir = tmp_path / ".a2ts"
+
+    mock_engine = MagicMock()
+    mock_engine.transcribe.return_value = [
+        RawSegment(
+            id=0,
+            start=0.5,
+            end=1.5,
+            text="Parakeet with timestamps.",
+            words=[
+                WordTimestamp(word="Parakeet", start=0.5, end=0.9, probability=1.0),
+                WordTimestamp(word="with", start=0.9, end=1.1, probability=1.0),
+                WordTimestamp(word="timestamps.", start=1.1, end=1.5, probability=1.0),
+            ],
+        )
+    ]
+
+    with (
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.scan_context_directory", return_value=[]),
+        patch("a2ts.cli.get_engine", return_value=mock_engine) as mock_get_engine,
+        patch("a2ts.cli.diarize_segments", return_value=[]) as mock_diarize,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--engine",
+                "parakeet",
+                "--diarize",
+                "--no-interactive",
+                "--output",
+                str(out_file),
+                "--cache-dir",
+                str(cache_dir),
+            ],
+        )
+        assert result.exit_code == 0
+        mock_get_engine.assert_called_once()
+        assert mock_get_engine.call_args[0][0] == "parakeet"
+        mock_diarize.assert_called_once()
 
 
 def test_run_non_tty_defaults_to_non_interactive(tmp_path: Path) -> None:
@@ -2478,3 +2530,261 @@ def test_run_profile_match_escapes_bracketed_names(tmp_path: Path) -> None:
 
         assert result.exit_code == 0
         assert "Matched voice profile for SPEAKER_00: [DM] Bob" in result.output
+
+
+def test_review_no_interactive_closed_set_with_speakers(tmp_path: Path) -> None:
+    """Test review subcommand with --no-interactive, --closed-set, and --speakers."""
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    out_file = tmp_path / "out.md"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello there.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
+    )
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "hash123",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "no_prompt",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-10-01T00:00:00Z",
+        "output_path": str(out_file),
+        "rpg_normalize": True,
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    vp_file = tmp_path / "voice_profiles.json"
+    vp = VoiceProfilesDatabase(
+        speakers={
+            "Alice": VoiceProfile(speaker_name="Alice", centroid=[1.0, 0.0]),
+            "Bob": VoiceProfile(speaker_name="Bob", centroid=[0.0, 1.0]),
+        }
+    )
+    vp_file.write_text(vp.model_dump_json(), encoding="utf-8")
+
+    # Mock turn embeddings
+    mock_embs = (np.array([[1.0, 0.0]], dtype=np.float32), [0])
+
+    with (
+        patch("a2ts.cli.load_turn_embeddings", return_value=mock_embs),
+        patch("a2ts.cli.run_interactive_review") as mock_review,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--no-interactive",
+                "--closed-set",
+                "--speakers",
+                "Bob",
+                "--voice-profiles",
+                str(vp_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Interactive review must NOT have been called
+        mock_review.assert_not_called()
+        # Even though embedding is [1, 0] (closest to Alice), --speakers constrained to Bob
+        assert "Matched voice profile for SPEAKER_00: Bob" in result.output
+        content = out_file.read_text(encoding="utf-8")
+        assert "Bob" in content
+
+
+def test_review_no_interactive_closed_set_with_speakers_file_only(
+    tmp_path: Path,
+) -> None:
+    """Test review with only --speakers-file (without --speakers) constrains profile matching."""
+    session_dir = tmp_path / ".a2ts"
+    session_dir.mkdir(parents=True)
+    out_file = tmp_path / "out.md"
+
+    turns = [
+        AlignedTurn(
+            turn_id=0,
+            start=0.0,
+            end=5.0,
+            speaker="SPEAKER_00",
+            cluster_id="SPEAKER_00",
+            text="Hello there.",
+        )
+    ]
+    (session_dir / "turns.json").write_text(
+        json.dumps([t.model_dump() for t in turns]), encoding="utf-8"
+    )
+    (session_dir / "speakers_mapping.json").write_text(
+        json.dumps(SpeakersMapping().model_dump()), encoding="utf-8"
+    )
+    session_meta = {
+        "media_path": "/path/video.mkv",
+        "media_hash": "hash123",
+        "duration_seconds": 10.0,
+        "engine": "whisper",
+        "model_name": "large-v3",
+        "prompt_hash": "no_prompt",
+        "time_slice_minutes": 15.0,
+        "created_at": "2026-10-01T00:00:00Z",
+        "output_path": str(out_file),
+        "rpg_normalize": True,
+    }
+    (session_dir / "session.json").write_text(
+        json.dumps(session_meta), encoding="utf-8"
+    )
+
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    vp_file = tmp_path / "voice_profiles.json"
+    vp = VoiceProfilesDatabase(
+        speakers={
+            "Alice": VoiceProfile(speaker_name="Alice", centroid=[1.0, 0.0]),
+            "Bob": VoiceProfile(speaker_name="Bob", centroid=[0.0, 1.0]),
+        }
+    )
+    vp_file.write_text(vp.model_dump_json(), encoding="utf-8")
+
+    # File only lists Bob (Alice is absent)
+    spk_file = tmp_path / "roster.txt"
+    spk_file.write_text("- Bob\n", encoding="utf-8")
+
+    # Mock turn embeddings closer to Alice [1, 0]
+    mock_embs = (np.array([[1.0, 0.0]], dtype=np.float32), [0])
+
+    with (
+        patch("a2ts.cli.load_turn_embeddings", return_value=mock_embs),
+        patch("a2ts.cli.run_interactive_review") as mock_review,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "review",
+                str(session_dir),
+                "--no-interactive",
+                "--closed-set",
+                "--speakers-file",
+                str(spk_file),
+                "--voice-profiles",
+                str(vp_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_review.assert_not_called()
+        # Even though closer to Alice, roster.txt only has Bob, so it must match Bob
+        assert "Matched voice profile for SPEAKER_00: Bob" in result.output
+        content = out_file.read_text(encoding="utf-8")
+        assert "Bob" in content
+
+
+def test_run_help_shows_language_option_and_parakeet_note() -> None:
+    """Test that a2ts run --help documents --language / -l and mentions Parakeet limitation."""
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--language" in result.output
+    assert "-l" in result.output
+    assert "parakeet" in result.output.lower()
+
+
+def test_craig_help_shows_language_option() -> None:
+    """Test that a2ts craig --help documents --language / -l."""
+    result = runner.invoke(app, ["craig", "--help"])
+    assert result.exit_code == 0
+    assert "--language" in result.output
+    assert "-l" in result.output
+
+
+def test_run_passes_language_to_transcriber(tmp_path: Path) -> None:
+    """Test that a2ts run passes the selected language to the transcriber."""
+    media_file = tmp_path / "test.mp3"
+    media_file.write_bytes(b"dummy")
+
+    mock_transcriber = MagicMock()
+    mock_transcriber.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Hello world", words=[])
+    ]
+
+    with (
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.create_transcriber", return_value=mock_transcriber),
+        patch("a2ts.cli.diarize_segments", return_value=[]),
+        patch("a2ts.cli.align_words_to_speaker_turns", return_value=[]),
+        patch("a2ts.cli.assign_time_slices", return_value=[]),
+        patch("a2ts.cli.render_markdown_transcript", return_value="# Transcript\n"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--cache-dir",
+                str(tmp_path / ".a2ts"),
+                "--language",
+                "en",
+                "--no-diarize",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_transcriber.transcribe.assert_called_once()
+        _, kwargs = mock_transcriber.transcribe.call_args
+        assert kwargs.get("language") == "en"
+
+
+def test_run_warns_when_parakeet_used_with_explicit_language(tmp_path: Path) -> None:
+    """Test that a2ts run displays a warning when --engine parakeet is used with a non-default language."""
+    media_file = tmp_path / "test.mp3"
+    media_file.write_bytes(b"dummy")
+
+    mock_transcriber = MagicMock()
+    mock_transcriber.transcribe.return_value = [
+        RawSegment(id=0, start=0.0, end=1.0, text="Bonjour monde", words=[])
+    ]
+
+    with (
+        patch("a2ts.cli.extract_audio_to_wav", return_value=tmp_path / "audio.wav"),
+        patch("a2ts.cli.create_transcriber", return_value=mock_transcriber),
+        patch("a2ts.cli.diarize_segments", return_value=[]),
+        patch("a2ts.cli.align_words_to_speaker_turns", return_value=[]),
+        patch("a2ts.cli.assign_time_slices", return_value=[]),
+        patch("a2ts.cli.render_markdown_transcript", return_value="# Transcript\n"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                str(media_file),
+                "--cache-dir",
+                str(tmp_path / ".a2ts"),
+                "--engine",
+                "parakeet",
+                "--language",
+                "en",
+                "--no-diarize",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "parakeet" in result.output.lower()
+        assert (
+            "automatic" in result.output.lower()
+            or "ignore" in result.output.lower()
+            or "détection automatique" in result.output.lower()
+        )
+

@@ -45,12 +45,54 @@ console = Console()
 _CLASSIFIER: Any = None
 _NEMOTRON_MODEL: Any = None
 _NEMOTRON_PROCESSOR: Any = None
+_TORCH_LOAD_PATCHED = False
+
+
+def ensure_torch_speechbrain_compat() -> None:
+    """Ensure SpeechBrain checkpoint loading works on PyTorch >= 2.6 without weights_only errors."""
+    global _TORCH_LOAD_PATCHED
+    if _TORCH_LOAD_PATCHED:
+        return
+    import inspect
+
+    import torch
+
+    try:
+        import speechbrain.utils.checkpoints as sb_checkpoints
+
+        def patched_sb_load(path: Any, device: str = "cpu") -> Any:
+            state_dict = torch.load(path, map_location=device, weights_only=False)
+            return sb_checkpoints.hook_on_loading_state_dict_checkpoint(state_dict)
+
+        sb_checkpoints.torch_patched_state_dict_load = patched_sb_load
+    except (ImportError, AttributeError):
+        pass
+
+    orig_torch_load = torch.load
+    sig = inspect.signature(orig_torch_load)
+    if "weights_only" in sig.parameters:
+
+        def compat_load(*args: Any, **kwargs: Any) -> Any:
+            if "weights_only" not in kwargs:
+                kwargs["weights_only"] = False
+            return orig_torch_load(*args, **kwargs)
+
+        torch.load = compat_load  # type: ignore[assignment]
+    _TORCH_LOAD_PATCHED = True
 
 
 def get_nemotron_model(device: str = "cuda") -> tuple[Any, Any]:
     """Load and cache the NVIDIA Nemotron-3 Diarization model and processor."""
     global _NEMOTRON_MODEL, _NEMOTRON_PROCESSOR
     if _NEMOTRON_MODEL is None or _NEMOTRON_PROCESSOR is None:
+        import os
+        import tempfile
+
+        # Ensure triton cache is writable even in sandboxed environments
+        os.environ.setdefault(
+            "TRITON_CACHE_DIR", str(Path(tempfile.gettempdir()) / "triton_cache")
+        )
+
         from transformers import (  # type: ignore[import-untyped]
             AutoModelForAudioFrameClassification,
             AutoProcessor,
@@ -63,14 +105,15 @@ def get_nemotron_model(device: str = "cuda") -> tuple[Any, Any]:
         ):
             processor = AutoProcessor.from_pretrained(model_id)
             device_str = (
-                "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+                "cuda"
+                if device in ("cuda", "auto") and torch.cuda.is_available()
+                else "cpu"
             )
             dtype = torch.float16 if device_str == "cuda" else torch.float32
             model = AutoModelForAudioFrameClassification.from_pretrained(
                 model_id,
                 dtype=dtype,
-                device_map=device_str,
-            )
+            ).to(device_str)
             _NEMOTRON_PROCESSOR = processor
             _NEMOTRON_MODEL = model
         console.print("[green]✓ Nemotron-3 Diarization model loaded.[/green]")
@@ -121,11 +164,16 @@ def diarize_nemotron(
         audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
         sr = target_sr
 
-    inputs = processor(audio, sampling_rate=sr).to(model.device, dtype=model.dtype)
+    inputs = processor(audio, sampling_rate=sr, return_tensors="pt").to(model.device)
+    if "input_features" in inputs:
+        inputs["input_features"] = inputs["input_features"].to(dtype=model.dtype)
+    elif "input_values" in inputs:
+        inputs["input_values"] = inputs["input_values"].to(dtype=model.dtype)
+
     with torch.inference_mode():
         logits = model(**inputs).logits
 
-    segments = processor.extract_speaker_dict(logits, inputs.attention_mask)[0]
+    segments = processor.extract_speaker_dict(logits, inputs.get("attention_mask"))[0]
 
     speaker_turns: list[SpeakerTurn] = []
     for i, seg in enumerate(segments):
@@ -167,6 +215,7 @@ def get_embedding_model(device: str = "cuda") -> Any:
     """Load and cache the SpeechBrain ECAPA-TDNN encoder."""
     global _CLASSIFIER
     if _CLASSIFIER is None:
+        ensure_torch_speechbrain_compat()
         from speechbrain.inference.speaker import (  # type: ignore[import-untyped]
             EncoderClassifier,
         )
@@ -176,7 +225,9 @@ def get_embedding_model(device: str = "cuda") -> Any:
             spinner="dots",
         ):
             device_str = (
-                "cuda" if device == "cuda" and torch.cuda.is_available() else "cpu"
+                "cuda"
+                if device in ("cuda", "auto") and torch.cuda.is_available()
+                else "cpu"
             )
             _CLASSIFIER = EncoderClassifier.from_hparams(
                 source="speechbrain/spkrec-ecapa-voxceleb",
@@ -538,7 +589,7 @@ def extract_embeddings_for_segments(
                 clip_tensor = torch.tensor(
                     audio[start_idx:end_idx], dtype=torch.float32
                 ).unsqueeze(0)
-                if device == "cuda" and torch.cuda.is_available():
+                if device in ("cuda", "auto") and torch.cuda.is_available():
                     clip_tensor = clip_tensor.cuda()
 
                 with torch.no_grad():
@@ -633,7 +684,7 @@ def extract_embeddings_for_turns(
                 clip_tensor = torch.tensor(
                     audio[start_idx:end_idx], dtype=torch.float32
                 ).unsqueeze(0)
-                if device == "cuda" and torch.cuda.is_available():
+                if device in ("cuda", "auto") and torch.cuda.is_available():
                     clip_tensor = clip_tensor.cuda()
 
                 with torch.no_grad():
@@ -714,7 +765,11 @@ def diarize_segments(
             force=force,
         )
 
-    if engine == "auto" and device == "cuda" and torch.cuda.is_available():
+    if (
+        engine == "auto"
+        and device in ("cuda", "auto")
+        and torch.cuda.is_available()
+    ):
         try:
             return diarize_nemotron(
                 audio_path=audio_path,
@@ -1090,6 +1145,7 @@ def classify_clusters_to_profiles(
     db: VoiceProfilesDatabase,
     similarity_threshold: float = 0.60,
     closed_set: bool = False,
+    allowed_speakers: Sequence[str] | None = None,
 ) -> dict[str, tuple[str, float]]:
     """Classify speech clusters to enrolled voice profiles using cluster mean embeddings.
 
@@ -1097,11 +1153,18 @@ def classify_clusters_to_profiles(
     If closed_set is True, assigns each cluster to argmax similarity among enrolled profiles
     (ignoring similarity_threshold, provided at least one profile exists).
     If closed_set is False, only assigns if max similarity >= similarity_threshold.
+    If allowed_speakers is provided, only matches against the specified speaker names.
     """
     if not cluster_embeddings or not db.speakers:
         return {}
 
     speaker_names = list(db.speakers.keys())
+    if allowed_speakers is not None:
+        allowed_set = set(allowed_speakers)
+        speaker_names = [name for name in speaker_names if name in allowed_set]
+    if not speaker_names:
+        return {}
+
     centroids = np.array(
         [db.speakers[name].centroid for name in speaker_names],
         dtype=np.float32,

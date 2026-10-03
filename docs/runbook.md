@@ -32,9 +32,21 @@
    uv sync
    ```
 
-3. **Install Voxtral (Multimodal Audio LLM) dependencies** (optional):
+3. **Install optional engine dependencies**:
    ```bash
+   # Parakeet (NVIDIA NeMo ASR):
+   uv sync --extra parakeet
+
+   # Voxtral (Multimodal Audio LLM):
    uv sync --extra voxtral
+
+   # All engines:
+   uv sync --extra voxtral --extra parakeet
+   ```
+
+   For global system installation via `uv tool`:
+   ```bash
+   uv tool install --editable ".[parakeet]" --reinstall
    ```
 
 4. **Verify environment**:
@@ -56,7 +68,19 @@ uv run a2ts run session.mp4 \
   --output transcript.md
 ```
 
-### 2.2 High-Speed Batch Transcription (Whisper Turbo + Nemotron)
+### 2.2 Fast Multilingual Transcription (NVIDIA NeMo Parakeet)
+High-accuracy multilingual RNN-T transcription with word-level timestamps aligned to acoustic turns:
+
+```bash
+uv run a2ts run session.mkv \
+  --engine parakeet \
+  --model-name nvidia/parakeet-tdt-0.6b-v3 \
+  --context-dir contexte/ \
+  --voice-profiles contexte/voice_profiles.json \
+  --output transcript.md
+```
+
+### 2.3 High-Speed Batch Transcription (Whisper Turbo + Nemotron)
 Maximal throughput for quick overviews without interactive review:
 
 ```bash

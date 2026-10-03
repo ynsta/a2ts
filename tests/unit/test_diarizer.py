@@ -379,6 +379,38 @@ def test_classify_clusters_to_profiles() -> None:
     assert len(closed_matches) == 4
 
 
+def test_classify_clusters_to_profiles_with_allowed_speakers() -> None:
+    from a2ts.diarizer import classify_clusters_to_profiles
+    from a2ts.models import VoiceProfile, VoiceProfilesDatabase
+
+    db = VoiceProfilesDatabase(
+        speakers={
+            "Brakk": VoiceProfile(speaker_name="Brakk", centroid=[1.0, 0.0]),
+            "Merrow": VoiceProfile(speaker_name="Merrow", centroid=[0.0, 1.0]),
+            "Oskel": VoiceProfile(speaker_name="Oskel", centroid=[-1.0, 0.0]),
+        }
+    )
+
+    cluster_embs = {
+        "SPEAKER_00": [np.array([0.9, 0.1], dtype=np.float32)],
+        "SPEAKER_01": [np.array([0.1, 0.9], dtype=np.float32)],
+    }
+
+    # Constrain to only Merrow and Oskel (Brakk excluded)
+    matches = classify_clusters_to_profiles(
+        cluster_embs, db, closed_set=True, allowed_speakers=["Merrow", "Oskel"]
+    )
+    # Even though SPEAKER_00 is closest to Brakk, Brakk is excluded, so it matches the closest allowed
+    assert matches["SPEAKER_00"][0] in ("Merrow", "Oskel")
+    assert matches["SPEAKER_01"][0] == "Merrow"
+
+    # If allowed_speakers contains unknown name, returns empty
+    assert (
+        classify_clusters_to_profiles(cluster_embs, db, allowed_speakers=["Unknown"])
+        == {}
+    )
+
+
 def test_propagate_speaker_labels() -> None:
     from a2ts.diarizer import propagate_speaker_labels
     from a2ts.models import AlignedTurn, SpeakersMapping

@@ -47,7 +47,7 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 - Deduplicates and tokenizes discovered terms using `cl100k_base` BPE tokenizer.
 - Packs extracted terms into a token-budgeted prompt (default: 180 tokens, Whisper max 224 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
 
-### 3.3 Dual-Engine Speech Recognition (ASR)
+### 3.3 Triple-Engine Speech Recognition (ASR)
 - **Faster-Whisper**:
   - Utilizes CTranslate2 engine for high-efficiency Whisper inference.
   - Platform & Device Execution: Runs on CUDA GPU (`float16`) or CPU (`int8` quantization). On macOS (Apple Silicon / Intel), Faster-Whisper runs via CPU with `int8` quantization (CTranslate2 has no Metal backend; `float16` on CPU is unsupported by CTranslate2).
@@ -55,10 +55,15 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Supports model sizes: `large-v3`, `turbo`, `medium`, `small`.
   - Configurable compute types (`float16`, `int8`, `float32`).
   - Word-level timestamp generation via attention alignment.
+- **NVIDIA NeMo Parakeet**:
+  - Fast multilingual TDT ASR model (`nvidia/parakeet-tdt-0.6b-v3`).
+  - Native word-level timestamps extraction aligned to Nemotron-3 or SpeechBrain ECAPA diarization turns.
+  - Requires `nemo_toolkit[asr]` (optional extra: `uv sync --extra parakeet`).
 - **Mistral Voxtral**:
   - Leverages Mistral AI's multimodal audio LLM (`mistralai/Voxtral-Mini-3B-2507`) via Hugging Face `transformers`.
   - Accepts `--device` (default: `auto`) and `--compute-type` arguments (defaults to adaptive: `float16` on CUDA, `int8` on CPU).
   - Direct audio-context comprehension for nuanced speech patterns.
+  - Requires `mistral-common[audio]` and `accelerate` (optional extra: `uv sync --extra voxtral`).
 
 ### 3.4 Acoustic Speaker Diarization
 - **NVIDIA Nemotron-3 Diarization (Primary Engine)**:
@@ -97,7 +102,7 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 - Debounces contiguous speaker turns (merges turns from the same speaker separated by <= 2.0s silence).
 - Formats structured Markdown output with timestamp headers:
   ```markdown
-  ### [00:01:15 - 00:01:28] Brakk
+  ### [00:01:15 - 00:01:28] Alice
   
   J'ai avancé en éclaireur quand il y a des bêtes qui ont sauté.
   ```
@@ -140,8 +145,9 @@ a2ts run <media_file> [OPTIONS]
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `media_file` | `Path` (Arg) | *Required* | Path to input audio or video file |
-| `--engine` | `str` | `whisper` | ASR engine: `whisper` or `voxtral` |
+| `--engine` | `str` | `whisper` | ASR engine: `whisper`, `parakeet`, or `voxtral` |
 | `--model-name` | `str` | *Engine default* | Model checkpoint (e.g. `turbo`, `large-v3`) |
+| `--language / -l` | `str` | `fr` | Spoken language code (e.g. `fr`, `en`). Supported by Faster-Whisper; ignored by Parakeet (automatic detection only) |
 | `--device` | `str` | `auto` | Hardware device: `auto` (CUDA if available, else CPU), `cuda`, or `cpu` |
 | `--compute-type` | `str | None` | `None` (auto) | Precision: `auto` (`float16` on CUDA, `int8` on CPU), `float16`, `int8`, `float32` |
 | `--context-dir` | `Path` | `contexte` | Obsidian notes folder for lore extraction |
