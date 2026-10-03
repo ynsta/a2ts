@@ -516,16 +516,16 @@ def run(
         console.print(
             f"[bold]Step 3: Transcribing with engine '{escape(engine)}'...[/bold]"
         )
-        passed_model_name = (
-            resolved_model_name if model_name is not None else None
-        )
+        passed_model_name = resolved_model_name if model_name is not None else None
         transcriber = create_transcriber(
             engine=engine,
             model_name=passed_model_name,
             device=device,
             compute_type=compute_type,
         )
-        raw_segments = transcriber.transcribe(audio_path, prompt=prompt, language=language)
+        raw_segments = transcriber.transcribe(
+            audio_path, prompt=prompt, language=language
+        )
         if any(getattr(seg, "is_truncated", False) for seg in raw_segments):
             console.print(
                 "[yellow]Warning: Output was truncated; skipping persistent transcript cache to prevent replaying incomplete transcript.[/yellow]"

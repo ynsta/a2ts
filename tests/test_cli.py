@@ -2787,4 +2787,3 @@ def test_run_warns_when_parakeet_used_with_explicit_language(tmp_path: Path) -> 
             or "ignore" in result.output.lower()
             or "détection automatique" in result.output.lower()
         )
-

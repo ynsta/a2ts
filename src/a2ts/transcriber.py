@@ -435,7 +435,7 @@ class ParakeetEngine:
     ) -> list[RawSegment]:
         """Transcribe audio using NeMo Parakeet model with word timestamps and safe audio chunking."""
         import numpy as np
-        import soundfile as sf
+        import soundfile as sf  # type: ignore[import-untyped]
 
         model = self._load_model()
 
@@ -518,12 +518,24 @@ class ParakeetEngine:
                     for w in word_stamps:
                         if isinstance(w, dict):
                             w_text = w.get("word", "")
-                            w_start = offset_sec + float(w.get("start", w.get("start_offset", 0.0)))
-                            w_end = offset_sec + float(w.get("end", w.get("end_offset", 0.0)))
+                            raw_start = w.get("start")
+                            if raw_start is None:
+                                raw_start = w.get("start_offset", 0.0)
+                            raw_end = w.get("end")
+                            if raw_end is None:
+                                raw_end = w.get("end_offset", 0.0)
+                            w_start = offset_sec + float(raw_start or 0.0)
+                            w_end = offset_sec + float(raw_end or 0.0)
                         else:
                             w_text = getattr(w, "word", "")
-                            w_start = offset_sec + float(getattr(w, "start", getattr(w, "start_offset", 0.0)))
-                            w_end = offset_sec + float(getattr(w, "end", getattr(w, "end_offset", 0.0)))
+                            raw_start = getattr(w, "start", None)
+                            if raw_start is None:
+                                raw_start = getattr(w, "start_offset", 0.0)
+                            raw_end = getattr(w, "end", None)
+                            if raw_end is None:
+                                raw_end = getattr(w, "end_offset", 0.0)
+                            w_start = offset_sec + float(raw_start or 0.0)
+                            w_end = offset_sec + float(raw_end or 0.0)
                         all_words.append(
                             WordTimestamp(
                                 word=str(w_text).strip(),
@@ -535,7 +547,9 @@ class ParakeetEngine:
 
         full_text = " ".join(text_parts)
         start_time = all_words[0].start if all_words else 0.0
-        end_time = all_words[-1].end if all_words else (total_duration or duration or 0.0)
+        end_time = (
+            all_words[-1].end if all_words else (total_duration or duration or 0.0)
+        )
 
         return [
             RawSegment(

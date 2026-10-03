@@ -58,7 +58,7 @@ def ensure_torch_speechbrain_compat() -> None:
     import torch
 
     try:
-        import speechbrain.utils.checkpoints as sb_checkpoints
+        import speechbrain.utils.checkpoints as sb_checkpoints  # type: ignore[import-untyped]
 
         def patched_sb_load(path: Any, device: str = "cpu") -> Any:
             state_dict = torch.load(path, map_location=device, weights_only=False)
@@ -765,11 +765,7 @@ def diarize_segments(
             force=force,
         )
 
-    if (
-        engine == "auto"
-        and device in ("cuda", "auto")
-        and torch.cuda.is_available()
-    ):
+    if engine == "auto" and device in ("cuda", "auto") and torch.cuda.is_available():
         try:
             return diarize_nemotron(
                 audio_path=audio_path,

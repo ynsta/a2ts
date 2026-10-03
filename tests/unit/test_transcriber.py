@@ -331,10 +331,14 @@ def test_get_engine_parakeet() -> None:
         model_name="nvidia/parakeet-1.1b-rnnt-multilingual-asr",
         device="cpu",
     )
+    assert isinstance(engine_alias, ParakeetEngine)
     assert engine_alias.model_name == "nvidia/parakeet-tdt-0.6b-v3"
 
     # Custom model preserved
-    engine_custom = get_engine("parakeet", model_name="custom/parakeet-model", device="cpu")
+    engine_custom = get_engine(
+        "parakeet", model_name="custom/parakeet-model", device="cpu"
+    )
+    assert isinstance(engine_custom, ParakeetEngine)
     assert engine_custom.model_name == "custom/parakeet-model"
 
 
@@ -407,7 +411,7 @@ def test_parakeet_engine_transcribe_with_timestamps() -> None:
 
 def test_parakeet_engine_chunked_streaming(tmp_path: Path) -> None:
     import numpy as np
-    import soundfile as sf
+    import soundfile as sf  # type: ignore[import-untyped]
 
     wav_file = tmp_path / "long.wav"
     # Create 400 seconds of audio at 16kHz
@@ -455,4 +459,3 @@ def test_parakeet_engine_chunked_streaming(tmp_path: Path) -> None:
     assert seg.words[2].word == "Deuxième"
     assert seg.words[2].start == 180.0 + 5.0
     assert seg.words[2].end == 180.0 + 6.0
-
