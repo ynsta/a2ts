@@ -5,7 +5,7 @@ description = "Contextualized Audio/Video Transcriber (Voxtral / Whisper)"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [
-    { name = "Stany MARCEL", email = "stanypub@gmail.com" }
+    { name = "a2ts contributors" }
 ]
 requires-python = ">=3.13"
 classifiers = [
@@ -33,6 +33,7 @@ dependencies = [
     "speechbrain>=1.1.1",
     "scikit-learn>=1.6.0",
     "transformers>=5.18.0",
+    "pyspellchecker>=0.9.0",
 ]
 
 [project.optional-dependencies]
@@ -47,9 +48,9 @@ parakeet = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/stany/a2ts"
-Repository = "https://github.com/stany/a2ts"
-Issues = "https://github.com/stany/a2ts/issues"
+Homepage = "https://github.com/ynsta/a2ts"
+Repository = "https://github.com/ynsta/a2ts"
+Issues = "https://github.com/ynsta/a2ts/issues"
 
 [project.scripts]
 a2ts = "a2ts.cli:app"

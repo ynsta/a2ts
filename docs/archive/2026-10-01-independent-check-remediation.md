@@ -129,7 +129,7 @@
 - Modify: `.agents/last-docs-consolidate`
 
 **Interfaces:**
-- Replace absolute `file:///home/stany/...` links in `docs/archive/2026-10-01-pre-release-reviews-remediation.md` with relative links.
+- Replace absolute filesystem links in `docs/archive/2026-10-01-pre-release-reviews-remediation.md` with relative links.
 - In `docs/spec.md`: fix `extract-vocab` description (outputs to stdout) and compute-type default.
 - In `docs/runbook.md`: clarify Nemotron memory requirements and long-audio limits.
 - Update `.agents/last-docs-consolidate`.

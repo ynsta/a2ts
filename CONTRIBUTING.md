@@ -21,7 +21,7 @@ We use [`uv`](https://docs.astral.sh/uv/) for deterministic Python environment a
 Clone the repository and install all development dependencies:
 
 ```bash
-git clone https://github.com/stany/a2ts.git
+git clone https://github.com/ynsta/a2ts.git
 cd a2ts
 uv sync --locked --dev
 ```

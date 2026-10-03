@@ -54,7 +54,7 @@ def test_refine_transcript_markdown_success() -> None:
         assert result == refined_output
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd == [
+        assert cmd[:-1] == [
             "agy",
             "--model",
             "custom-model",
@@ -62,7 +62,9 @@ def test_refine_transcript_markdown_success() -> None:
             "low",
             "--disable-slash-commands",
         ]
-        assert "Lance 1d20 pour voir." in mock_run.call_args.kwargs["input"]
+        assert cmd[-1].startswith("--print=")
+        assert "Lance 1d20 pour voir." in cmd[-1]
+        assert "input" not in mock_run.call_args.kwargs
         assert mock_run.call_args.kwargs["text"] is True
         assert mock_run.call_args.kwargs["capture_output"] is True
 

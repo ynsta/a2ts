@@ -24,14 +24,16 @@ docs/
 │   ├── 0003-speaker-diarization-nemotron-and-ecapa-hybrid.md
 │   ├── 0004-interactive-speaker-attribution-and-time-slicing.md
 │   ├── 0005-local-llm-refinement-via-agy-cli.md
-│   └── 0006-craig-multi-track-discord-pipeline.md
+│   ├── 0006-craig-multi-track-discord-pipeline.md
+│   ├── 0007-overlap-aware-word-alignment.md
+│   └── 0008-reviewed-glossary-and-turn-reconstruction.md
 └── archive/                # HISTORICAL: Deprecated/archived transient plans and session notes
     └── README.md
 ```
 
 | Document | Purpose & Audience | Key Contents |
 | :--- | :--- | :--- |
-| [**`spec.md`**](./spec.md) | **The What** (Functional Spec) | Feature capabilities, Obsidian lore mining, CLI commands (`run`, `review`, `recluster`, `split`), inputs/outputs. |
+| [**`spec.md`**](./spec.md) | **The What** (Functional Spec) | Feature capabilities, Obsidian lore mining, CLI commands (`run`, `craig`, `review`, `recluster`, `split`, `extract-vocab`, `extract-glossary`, `info`), inputs/outputs. |
 | [**`design.md`**](./design.md) | **The How** (Architecture & Design) | Pipeline sequence diagram, Pydantic schemas, Nemotron/ECAPA hybrid diarizer, `.a2ts/` caching, VRAM limits. |
 | [**`codemap.md`**](./codemap.md) | **The Map** (Codebase Navigation) | Inventory of all `src/a2ts/*.py` modules, responsibilities, inter-module dependencies, test mapping. |
 | [**`runbook.md`**](./runbook.md) | **The Ops** (Operations & Recipes) | `uv` installation, NVIDIA CUDA configuration, CLI command recipes, cache cleanup, common error fixes. |
@@ -47,6 +49,8 @@ docs/
 | [**ADR 0004**](./adr/0004-interactive-speaker-attribution-and-time-slicing.md) | Interactive Speaker Attribution and Time-Slicing | Accepted | 2026-09-22 |
 | [**ADR 0005**](./adr/0005-local-llm-refinement-via-agy-cli.md) | LLM Refinement via agy CLI and Remote Egress Boundary | Accepted | 2026-09-22 |
 | [**ADR 0006**](./adr/0006-craig-multi-track-discord-pipeline.md) | Craig Multi-Track Discord Pipeline Architecture | Accepted | 2026-09-29 |
+| [**ADR 0007**](./adr/0007-overlap-aware-word-alignment.md) | Overlap-Aware Word Alignment | Accepted | 2026-10-03 |
+| [**ADR 0008**](./adr/0008-reviewed-glossary-and-turn-reconstruction.md) | Reviewed Glossary and Validated Turn Reconstruction | Accepted | 2026-10-03 |
 
 
 ---

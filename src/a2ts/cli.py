@@ -5,6 +5,7 @@ import platform
 import sys
 import time
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -46,10 +47,12 @@ from a2ts.diarizer import (
     propagate_speaker_labels,
     save_voice_profiles,
 )
+from a2ts.glossary import build_context_glossary
 from a2ts.media import compute_file_hash, extract_audio_to_wav, probe_media
 from a2ts.models import (
     AlignedTurn,
     ClusterSplit,
+    ContextGlossary,
     DiarizationCacheFile,
     DiarizationCacheProvenance,
     RawSegment,
@@ -82,6 +85,14 @@ from a2ts.vocab import (
     load_wordlist_file,
     scan_context_directory,
 )
+
+
+class RefinementMode(str, Enum):
+    """Validated transcript refinement modes."""
+
+    reconstruct = "reconstruct"
+    polish = "polish"
+
 
 app = typer.Typer(help="a2ts: Contextualized Audio/Video Transcriber")
 console = Console()
@@ -275,6 +286,46 @@ def extract_vocab(
     console.print(f"[bold green]Biasing Prompt:[/bold green]\n{escape(prompt)}")
 
 
+def _build_refinement_glossary(
+    context_dir: Path | None, language: str, extra_terms: list[str]
+) -> ContextGlossary:
+    """Build a reviewed spelling reference and report invalid inputs cleanly."""
+    try:
+        return build_context_glossary(
+            context_dir if context_dir is not None else Path("contexte"),
+            language=language,
+            extra_terms=extra_terms,
+        )
+    except (ValueError, OSError) as exc:
+        console.print(f"[bold red]{escape(str(exc))}[/bold red]")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def extract_glossary(
+    context_dir: Annotated[
+        Path, typer.Option(help="Directory containing reviewed markdown notes")
+    ] = Path("contexte"),
+    language: Annotated[str, typer.Option(help="Dictionary language code")] = "fr",
+    vocab_file: Annotated[
+        Path | None, typer.Option(help="Optional custom wordlist text file")
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option(help="Optional JSON snapshot output path")
+    ] = None,
+) -> None:
+    """Extract a frequency-ranked spelling glossary from reviewed context."""
+    extra_terms = (
+        [entity.name for entity in load_wordlist_file(vocab_file)] if vocab_file else []
+    )
+    glossary = _build_refinement_glossary(context_dir, language, extra_terms)
+    serialized = glossary.model_dump_json(indent=2)
+    if output is None:
+        typer.echo(serialized)
+    else:
+        atomic_write_text(output, serialized)
+
+
 @app.command()
 def run(
     media_file: Annotated[
@@ -412,6 +463,20 @@ def run(
     refine: Annotated[
         bool, typer.Option(help="Run local LLM refiner pass via agy")
     ] = False,
+    refine_mode: Annotated[
+        RefinementMode,
+        typer.Option(help="Reconstruct fragmented turns or polish existing turns"),
+    ] = RefinementMode.reconstruct,
+    refine_chunk_words: Annotated[
+        int, typer.Option(min=1, help="Maximum source words per reconstruction chunk")
+    ] = 1500,
+    refine_timestamps: Annotated[
+        bool,
+        typer.Option(
+            "--refine-timestamps/--no-refine-timestamps",
+            help="Keep source timestamp envelopes in reconstructed turns",
+        ),
+    ] = True,
     refine_model: Annotated[
         str, typer.Option(help="Model name for LLM refiner")
     ] = "gemini-3.8-flash-low",
@@ -801,7 +866,32 @@ def run(
         console.print(
             f"[cyan]Refining transcript via agy CLI model '{escape(refine_model)}' (external LLM)...[/cyan]"
         )
-        final_md = refine_transcript_markdown(raw_md, agy_model=refine_model)
+        glossary = _build_refinement_glossary(
+            context_dir,
+            language,
+            list(
+                dict.fromkeys(
+                    [*known_speakers, *(turn.speaker for turn in debounced_turns)]
+                )
+            )
+            + (
+                [entity.name for entity in load_wordlist_file(vocab_file)]
+                if vocab_file
+                else []
+            ),
+        )
+        atomic_write_text(
+            session_dir / "context_glossary.json", glossary.model_dump_json(indent=2)
+        )
+        final_md = refine_transcript_markdown(
+            raw_md,
+            agy_model=refine_model,
+            glossary=glossary,
+            rpg_normalize=rpg_normalize,
+            reconstruct=refine_mode == RefinementMode.reconstruct,
+            max_chunk_words=refine_chunk_words,
+            keep_timestamps=refine_timestamps,
+        )
 
     atomic_write_text(output, final_md)
 
@@ -1631,6 +1721,20 @@ def craig(
             help="Run local LLM refiner pass on transcript",
         ),
     ] = False,
+    refine_mode: Annotated[
+        RefinementMode,
+        typer.Option(help="Reconstruct fragmented turns or polish existing turns"),
+    ] = RefinementMode.reconstruct,
+    refine_chunk_words: Annotated[
+        int, typer.Option(min=1, help="Maximum source words per reconstruction chunk")
+    ] = 1500,
+    refine_timestamps: Annotated[
+        bool,
+        typer.Option(
+            "--refine-timestamps/--no-refine-timestamps",
+            help="Keep source timestamp envelopes in reconstructed turns",
+        ),
+    ] = True,
     refine_model: Annotated[
         str, typer.Option(help="Model name for LLM refiner")
     ] = "gemini-3.8-flash-low",
@@ -1775,8 +1879,32 @@ def craig(
         console.print(
             f"[cyan]Refining transcript via agy CLI model '{escape(refine_model)}' (external LLM)...[/cyan]"
         )
+        speaker_terms = [
+            term
+            for speaker in speakers.values()
+            for term in [
+                speaker.discord_username,
+                speaker.character_name,
+                *speaker.nicknames,
+            ]
+            if term
+        ]
+        speaker_terms.extend(turn.speaker for turn in debounced_turns if turn.speaker)
+        glossary = _build_refinement_glossary(
+            context_dir, language, list(dict.fromkeys(speaker_terms))
+        )
+        atomic_write_text(
+            cache_dir / "context_glossary.json", glossary.model_dump_json(indent=2)
+        )
         final_md = refine_transcript_markdown(
-            raw_md, agy_model=refine_model, effort=refine_effort
+            raw_md,
+            agy_model=refine_model,
+            effort=refine_effort,
+            glossary=glossary,
+            rpg_normalize=rpg_normalize,
+            reconstruct=refine_mode == RefinementMode.reconstruct,
+            max_chunk_words=refine_chunk_words,
+            keep_timestamps=refine_timestamps,
         )
 
     # 13. Write output to out_path atomically using atomic_write_text

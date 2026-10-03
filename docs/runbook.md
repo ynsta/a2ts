@@ -130,7 +130,7 @@ uv run a2ts extract-vocab contexte/
 ```
 
 ### 2.7 Refining Transcripts with Local LLM (`--refine`)
-Runs an automated pass via `agy` to polish RPG terminology and mark out-of-character comments:
+Runs structured turn reconstruction via `agy` to repair fragmented sentences and infer speaker assignments. RPG normalization and out-of-character annotations remain enabled by default:
 
 ```bash
 uv run a2ts run session.wav \
@@ -138,6 +138,17 @@ uv run a2ts run session.wav \
   --no-interactive \
   --output transcript_refined.md
 ```
+
+#### Reviewed Dictionary and Reconstruction Controls
+
+```bash
+a2ts extract-glossary --context-dir ./contexte --language fr --output glossary.json
+a2ts run session.wav --context-dir ./contexte --refine --refine-chunk-words 1500 --output transcript.md
+```
+
+Existing `--refine` commands select reconstruction. Add `--no-refine-timestamps` for speaker-only headings or `--refine-mode polish` to preserve original headings. Larger word-bounded blocks reduce request count; actual model latency depends on output size and provider. Invalid output falls back to raw chunks with a specific rejection reason. Compare `.raw.md` when reviewing inferred speaker repairs.
+
+For meetings, provide reviewed notes under `--context-dir`, select `--language`, and add `--no-rpg-normalize`. Requests receive compact dictionary references rather than whole notes. Snapshots: `.a2ts/sessions/<media_hash>/context_glossary.json`; Craig: `<recording_dir>/.transcripts/context_glossary.json`. Extraction is offline; refinement uses the existing external `agy` boundary.
 
 ### 2.8 Processing Multi-Track Craig Discord Recordings (`a2ts craig`)
 
@@ -256,6 +267,16 @@ rm -rf recordings/session_01/.transcripts/
 
 ---
 
+### 4.6 Fragmented Words or Incorrect Speakers During Overlap
+
+Compare the affected passage in `<output>.raw.md` and `<output>.md` when `--refine` was enabled. If both contain the same speaker cuts, inspect `.a2ts/diarization/<media_hash>.json` and the word timestamps in `.a2ts/transcripts/`; refinement is downstream of attribution.
+
+Overlap-aware alignment ranks temporal intersections and keeps apostrophe/hyphen continuation tokens together. One notice at the beginning of the transcript indicates uncertain attribution. Per-turn `speaker_uncertain` flags remain in session metadata: a lexical group intersected more than one speaker cluster, either during simultaneous speech or across a speaker boundary. Review affected passages against audio; the chosen name is a temporal estimate, not an acoustic certainty. Voice profiles name clusters but cannot resolve simultaneous speech by themselves.
+
+Refinement validation failures preserve the raw chunk and now identify the affected chunk and exact cause. Header mismatches mean timestamps, speaker headings, order, or heading count changed; length mismatches include the compared counts and tolerance; uncertainty-marker mismatches indicate protected metadata was altered; empty output indicates the model returned no transcript. The single transcript notice is preserved by the application and excluded from model editing. Do not disable validation to make a rejected chunk pass.
+
+Existing `turns.json` files contain previously aligned output. Running `a2ts review` alone does not apply a new alignment algorithm to those words. Regenerate alignment through `a2ts run` using the same settings and existing ASR/diarization caches, preferably with a new output path. Review cached speaker mappings against the new runs before accepting attribution. Avoid `--force` unless inference itself must be rerun.
+
 ## 5. Developer Verification & Quality Gates
 
 All contributions and agent tasks must pass 4 verification gates before completion with 0 errors:
@@ -287,5 +308,3 @@ uv run pytest -v tests/test_refiner_safety.py
 # Run packaging and performance invariant benchmarks
 uv run pytest -v tests/test_packaging_and_perf.py
 ```
-
-

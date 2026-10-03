@@ -92,7 +92,12 @@ def apply_speakers_mapping(
     updated: list[AlignedTurn] = []
     for turn in turns:
         speaker = resolve_speaker_for_turn(
-            turn_id=turn.turn_id,
+            turn_id=(
+                turn.source_turn_id
+                if turn.turn_id not in mapping.turn_overrides
+                and turn.source_turn_id is not None
+                else turn.turn_id
+            ),
             cluster_id=turn.cluster_id,
             time_slice_id=turn.time_slice_id,
             mapping=mapping,

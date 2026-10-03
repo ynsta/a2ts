@@ -73,52 +73,117 @@ def align_words_to_speaker_turns(
             # If engine produced no word timestamps, treat segment as one block
             all_words.append(WordTimestamp(word=seg.text, start=seg.start, end=seg.end))
 
-    aligned_turns: list[AlignedTurn] = []
-    words_by_turn: dict[int, list[WordTimestamp]] = {t.id: [] for t in sorted_turns}
-
+    all_words.sort(key=lambda word: word.start)
+    # Join adjacent lexical continuations without changing original token timestamps.
+    groups: list[list[WordTimestamp]] = []
     for word in all_words:
-        mid_point = (word.start + word.end) / 2.0
-
-        # Find nearby candidate overlapping turns using bisect
-        idx = bisect_right(turn_starts, word.start)
-        cand_start = bisect_left(turn_starts, mid_point - max_turn_duration)
-        cand_end = bisect_right(turn_starts, mid_point)
-
-        matched_turn: SpeakerTurn | None = None
-        for i in range(cand_start, cand_end):
-            t = sorted_turns[i]
-            if t.start <= mid_point <= t.end:
-                matched_turn = t
-                break
-
-        if matched_turn is None:
-            # Find nearest turn among immediate neighbors in local window O(log N)
-            cand_left = max(0, min(idx - 5, cand_start))
-            cand_right = min(len(sorted_turns), max(idx + 5, cand_end))
-            matched_turn = min(
-                sorted_turns[cand_left:cand_right],
-                key=lambda t: min(abs(t.start - mid_point), abs(t.end - mid_point)),
-            )
-
-        words_by_turn[matched_turn.id].append(word)
-
-    for turn in sorted_turns:
-        turn_words = words_by_turn[turn.id]
-        if not turn_words:
-            continue
-        text = " ".join(w.word for w in turn_words).strip()
-        speaker = turn.resolved_speaker if turn.resolved_speaker else turn.cluster_id
-        aligned_turns.append(
-            AlignedTurn(
-                turn_id=turn.id,
-                start=turn_words[0].start,
-                end=turn_words[-1].end,
-                speaker=speaker,
-                cluster_id=turn.cluster_id,
-                text=text,
-                words=turn_words,
-                time_slice_id=turn.time_slice_id,
-            )
+        token = word.word.strip()
+        previous = groups[-1][-1] if groups else None
+        continuation = token.startswith(("'", "’", "-", "‐", "‑")) or (
+            bool(token) and not any(c.isalnum() for c in token)
         )
+        if (
+            previous is not None
+            and word.start - previous.end <= 0.2
+            and (
+                continuation
+                or previous.word.rstrip().endswith(("'", "’", "-", "‐", "‑"))
+            )
+        ):
+            groups[-1].append(word)
+        else:
+            groups.append([word])
 
-    return sorted(aligned_turns, key=lambda t: t.start)
+    aligned_turns: list[AlignedTurn] = []
+    seen_ids: set[int] = set()
+    next_id = max(t.id for t in turns) + 1
+    for group in groups:
+        anchor = group[0]
+        group_end = max(w.end for w in group)
+        midpoint = (anchor.start + group_end) / 2.0
+        left = bisect_left(turn_starts, anchor.start - max_turn_duration)
+        right = bisect_right(turn_starts, group_end)
+
+        def overlap(turn: SpeakerTurn, word: WordTimestamp) -> float:
+            return max(0.0, min(turn.end, word.end) - max(turn.start, word.start))
+
+        candidates = [
+            t for t in sorted_turns[left:right] if any(overlap(t, w) > 0 for w in group)
+        ]
+        if not candidates and anchor.start == anchor.end:
+            candidates = [
+                t for t in sorted_turns[left:right] if t.start <= midpoint <= t.end
+            ]
+        if candidates:
+            matched = min(
+                candidates,
+                key=lambda t: (
+                    -sum(overlap(t, w) for w in group),
+                    abs((t.start + t.end) / 2.0 - midpoint),
+                    t.start,
+                    t.id,
+                ),
+            )
+        else:
+            idx = bisect_right(turn_starts, anchor.start)
+            candidates = sorted_turns[
+                max(0, min(idx - 5, left)) : min(len(turns), max(idx + 5, right))
+            ]
+            matched = min(
+                candidates,
+                key=lambda t: min(abs(t.start - midpoint), abs(t.end - midpoint)),
+            )
+        nearby = sorted_turns[left : bisect_right(turn_starts, group_end)]
+        clusters = {
+            t.cluster_id
+            for t in nearby
+            if any(
+                overlap(t, w) > 0 or (w.start == w.end and t.start <= w.start <= t.end)
+                for w in group
+            )
+        }
+        uncertain = len(clusters) > 1
+        # Only extend the current run; revisiting a source turn must not reorder words.
+        if aligned_turns and aligned_turns[-1].source_turn_id == matched.id:
+            current = aligned_turns[-1]
+            current.words.extend(group)
+            current.end = max(current.end, group_end)
+            current.speaker_uncertain |= uncertain
+        else:
+            run_id = matched.id if matched.id not in seen_ids else next_id
+            if matched.id in seen_ids:
+                next_id += 1
+            seen_ids.add(matched.id)
+            aligned_turns.append(
+                AlignedTurn(
+                    turn_id=run_id,
+                    source_turn_id=matched.id,
+                    start=anchor.start,
+                    end=group_end,
+                    speaker=matched.resolved_speaker or matched.cluster_id,
+                    cluster_id=matched.cluster_id,
+                    text="",
+                    words=list(group),
+                    time_slice_id=matched.time_slice_id,
+                    speaker_uncertain=uncertain,
+                )
+            )
+    for run in aligned_turns:
+        text = ""
+        previous_token = ""
+        previous_end: float | None = None
+        for word in run.words:
+            token = word.word.strip()
+            attach = (
+                token.startswith(("'", "’", "-", "‐", "‑"))
+                or (bool(token) and not any(c.isalnum() for c in token))
+                or previous_token.endswith(("'", "’", "-", "‐", "‑"))
+            )
+            attach = (
+                attach and previous_end is not None and word.start - previous_end <= 0.2
+            )
+            text += ("" if not text or attach else " ") + token
+            previous_token = token
+            previous_end = word.end
+        run.text = text
+    return aligned_turns

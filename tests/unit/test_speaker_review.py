@@ -762,7 +762,7 @@ def test_interactive_review_prompts_and_options_escape_brackets(tmp_path: Path) 
             text="Ouais.",
         ),
     ]
-    candidates = ["MJ (Arghun)", "Grolm"]
+    candidates = ["Facilitator", "Alex"]
     audio_path = tmp_path / "audio.wav"
     audio_path.touch()
 

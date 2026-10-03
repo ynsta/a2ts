@@ -90,8 +90,8 @@ flowchart TD
 - Identifies three classes of vocabulary tokens:
   1. YAML Frontmatter: values under `aliases:` lists.
   2. Wikilinks: internal references formatted as `[[Entity Name]]` or `[[Target|Alias]]`.
-  3. Structural Headings: markdown headers (`# Title`, `## Subheading`).
-- Sorts entities by frequency and length, deduplicates case-insensitively, and encodes with OpenAI `cl100k_base` BPE tokenizer (`tiktoken`).
+  3. Structural Headings: level-two markdown headers (`## Subheading`).
+- Sorts entities by entity-kind priority, deduplicates case-insensitively, and uses a cached Whisper tokenizer when available, falling back to `cl100k_base`.
 - Truncates to a fixed token budget (default: 180 tokens, Whisper max 224 tokens) to fit within ASR prompt limits without degrading acoustic attention.
 
 ### 2.3 Dual-Engine Speech Recognition (`transcriber.py`)
@@ -123,7 +123,10 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
    - If `--voice-profiles` is not requested and no named speaker overrides exist, ECAPA is never loaded. The pipeline runs at pure Nemotron speed (~130x real-time).
 
 ### 2.5 Timeline Alignment & Slicing (`timeline.py`)
-- **Bisect Word-to-Turn Alignment**: Projects words onto speaker turns using binary search (`bisect_left` and `bisect_right`) over sorted turn start timestamps. For each `WordTimestamp`, calculates midpoint `(start + end) / 2.0` and identifies overlapping candidate `SpeakerTurn` entries within a bounded `max_turn_duration` window in $O(W \log T)$ time (where $W$ is word count and $T$ is turn count). Falls back to the nearest adjacent turn within a local 5-turn window if no turn strictly encloses the midpoint.
+- **Overlap-Aware Word Alignment**: Searches sorted turn starts for temporal intersections with each lexical token group. Assigns the group to the turn with the greatest sum of token intersections (without scoring intervening silence), then uses proximity between the group midpoint and turn center to break ties. Cross-cluster intersections set `AlignedTurn.speaker_uncertain`; this temporal heuristic cannot establish who spoke during simultaneous speech. A lexical group crossing a speaker boundary can also be uncertain. Gap fallback remains temporal rather than acoustic evidence. Candidate scans add cost proportional to the number of nearby turns; the algorithm is not strictly $O(W \log T)$ under dense overlaps.
+- **Token Continuity**: Apostrophe and hyphen continuation tokens, and standalone punctuation, stay with their lexical group when the gap is at most 0.2 seconds. Original token timestamps remain available; rendered text removes artificial spaces around these continuations.
+- **Chronological Output**: Emits contiguous runs rather than collecting all words for an acoustic turn into one block. This preserves transcript order when overlapping turns alternate. See [ADR 0007](adr/0007-overlap-aware-word-alignment.md) for limitations and provenance requirements.
+- **Acoustic Provenance**: `AlignedTurn.source_turn_id` identifies the originating acoustic turn. The first run retains that turn's ID; later runs receive unique IDs above the acoustic ID range. A run-specific speaker override takes precedence over an inherited source-turn override. Voice-profile enrollment must not treat conflicting or uncertain fragments as reliable acoustic evidence.
 - Groups turns into configurable temporal windows (e.g. 15-minute time slices) using `assign_time_slices()`.
 - Supports temporal cluster division (`split_cluster_at_time()`, `apply_splits_to_turns()`) when a single acoustic cluster inadvertently spans distinct speakers.
 
@@ -136,6 +139,7 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
 
 ### 2.7 Consolidation & Post-Processing (`consolidator.py` & `refiner.py`)
 - **Debouncing**: Contiguous turns with matching speaker IDs separated by <= 2.0s are concatenated into a single turn block.
+- **Uncertainty Preservation**: Merged turns retain any `speaker_uncertain` flag. Markdown rendering emits `> [!WARNING] Some speaker attributions are uncertain. Review speaker assignments against the audio.` once before the first turn instead of repeating warnings under individual turns. Session metadata retains the per-turn flags for review and enrollment safeguards.
 - **Deterministic French Tabletop RPG Normalization (`normalize_rpg_terms`)**:
   - Replaces speech-recognition artifacts for dice notations (`lance un dé 20` -> `lance 1d20`, `trois dés de six` -> `3d6`).
   - Guards against noun confusion (`20 gardes`, `10 minutes`, `6 joueurs`).
@@ -143,17 +147,28 @@ Diarization solves **who spoke when**; identification solves **who is who**. `a2
 - **Markdown Rendering**: Formats speech into Markdown blocks with timestamp headers (`### [HH:MM:SS - HH:MM:SS] Speaker`).
 - **Pre-Refinement Snapshot**: Always emits `<output>.raw.md` containing the un-modified consolidated transcript before running LLM refinement.
 - **LLM Refinement via `agy` CLI (`refiner.py`)**:
-  - Splits transcript markdown into manageable chunks (default: 25 turns) via `chunk_transcript_markdown()`.
+  - Defaults to word-bounded structured reconstruction in the CLI. Explicit polish mode chunks existing turns via `chunk_transcript_markdown()` (default: 25 turns).
   - Dispatches chunks to external `agy` CLI subprocess (`agy --model <model> --effort <effort>`).
   - Encloses out-of-character table banter and dice mechanics in GitHub alert callouts (`> [!NOTE] Hors-jeu / Discussion`).
-  - **Safety Validation (`validate_refiner_chunk`)**: Strictly verifies that all turn headers match verbatim and word count delta remains <= 15%. If validation fails or the subprocess errors, falls back to the raw chunk.
+  - **Protected Notice**: The application-generated uncertainty notice is held outside model editing and restored once after chunk assembly, after any preamble or YAML frontmatter and before the first turn. It does not contribute to dialogue length accounting. Existing per-turn uncertainty callouts in legacy transcripts must stay on their original turns.
+  - **Polish Safety Validation (`validate_refiner_chunk`)**: Verifies turn headers and protected markers, and checks symmetric text-length accounting with a 15% tolerance (minimum five words). The same validation logic drives the boolean API and precise chunk-specific rejection logs. Empty output, header changes, marker changes, or excessive length changes fall back to the raw chunk. The prompt explicitly requires verbatim headers and marker preservation.
+
+#### Reviewed Dictionary and Structured Reconstruction
+
+`glossary.py` uses bundled offline `pyspellchecker` dictionaries for membership filtering only. Unknown words and explicit canonical phrases/aliases retain reviewed spelling without autocorrection. Identical visible lines exported in different files count once; repeated occurrences within a source remain meaningful. Strict `ContextGlossary` and `GlossaryEntry` models record frequencies, aliases, sources, language, dictionary version and full SHA-256 content/settings provenance.
+
+`build_glossary_reference()` emits complete JSON entries within 4000 characters, preferring transcript relevance then frequency. Entries are spelling evidence, never instructions or extra dialogue. `--no-rpg-normalize` disables RPG-specific normalization and annotation instructions for work contexts.
+
+CLI reconstruction delegates to `reconstruction.py`, with indexed words and a configurable source-word budget (default 1500 words per request). Strict structured records permit speaker and sentence-boundary changes but require exact complete ordered word-span coverage, existing speakers, nonempty text and bounded text edits, including small missing-word and name corrections. Invalid chunks fall back to raw content with explicit diagnostics. Preamble and application uncertainty notice remain outside model editing. Timestamps conservatively enclose source turns and can be omitted.
+
+Explicit polish mode retains 25-turn chunks and immutable headers. The direct Python API defaults to polish for compatibility. Raw snapshots remain unchanged in both modes. See [ADR 0008](adr/0008-reviewed-glossary-and-turn-reconstruction.md).
 
 ### 2.8 Craig Multi-Track Processing Pipeline (`craig.py`)
 - **Track Discovery & Username Extraction**: Scans `recording_dir` matching `^(\d+)-(.*)\.flac$` sorted numerically by track index. Extracts Discord usernames directly from track file stems (e.g. `1-merrow1.flac` -> `merrow1`).
 - **Speaker Roster Parsing (`speakers.md`)**: Parses lines formatted as `* username: Character Name, Role, surnoms: (Nick1, Nick2)`. Detects Game Master roles (`is_dm`) via regex matching keywords (`MJ`, `DM`, `GM`, `Maître du Jeu`). Falls back to track username when unmapped.
 - **Recording Metadata Parsing (`info.txt`)**: Extracts guild, channel, start time, and registered Discord user IDs from Craig's metadata summary.
 - **Context-Aware Biasing Prompt**: Combines character names, nicknames, and Discord usernames with mined Obsidian lore (`vocab.py`), budgeted to 180 tokens to maximize transcription accuracy for fantasy terminology.
-- **Discrete Track Caching with VAD & Language**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation verifies file size, mtime, model, compute type, prompt hash, VAD filter (`vad_filter`), VAD parameters (`vad_parameters`), and transcription language (`language='fr'`).
+- **Discrete Track Caching with VAD & Language**: Transcribes each audio track independently with Faster-Whisper. Caches raw segments with word timestamps in `<recording_dir>/.transcripts/<track_stem>.json` under a `TrackCacheProvenance` envelope. Invalidation verifies file size, mtime, model, compute type, prompt hash, VAD filter (`vad_filter`), VAD parameters (`vad_parameters`), and transcription language (selected by `--language`, default `fr`).
 - **Chronological Segment Interleaving**: Interleaves multi-track segments using `merge_craig_tracks_to_turns()` sorted by `(seg.start, track_id)`. Bypasses acoustic diarization and clustering entirely because physical track separation provides exact speaker isolation.
 - **Debouncing & Refinement**: Seamlessly chains into `consolidator.py` (`debounce_consecutive_turns()`, `render_markdown_transcript()`) and optional `refiner.py` (`refine_transcript_markdown()`).
 
@@ -170,14 +185,12 @@ class WordTimestamp(BaseModel):
     end: float
     probability: float = 1.0
 
-
 class RawSegment(BaseModel):
     id: int
     start: float
     end: float
     text: str
     words: list[WordTimestamp] = []
-
 
 class SpeakerTurn(BaseModel):
     id: int
@@ -189,7 +202,6 @@ class SpeakerTurn(BaseModel):
     flagged: bool = False
     notes: str = ""
 
-
 class AlignedTurn(BaseModel):
     turn_id: int
     start: float
@@ -200,18 +212,15 @@ class AlignedTurn(BaseModel):
     words: list[WordTimestamp] = Field(default_factory=list)
     time_slice_id: int = 0
 
-
 class VoiceProfile(BaseModel):
     speaker_name: str
     centroid: list[float]
     sample_count: int = 1
     sample_ids: list[str] = Field(default_factory=list)
 
-
 class VoiceProfilesDatabase(BaseModel):
     version: int = 1
     speakers: dict[str, VoiceProfile] = Field(default_factory=dict)
-
 
 class TranscriptCacheProvenance(BaseModel):
     version: int = 1
@@ -222,11 +231,9 @@ class TranscriptCacheProvenance(BaseModel):
     prompt_hash: str = "no_prompt"
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
-
 class TranscriptCacheFile(BaseModel):
     provenance: TranscriptCacheProvenance
     segments: list[RawSegment]
-
 
 class DiarizationCacheProvenance(BaseModel):
     version: int = 1
@@ -239,17 +246,14 @@ class DiarizationCacheProvenance(BaseModel):
     transcript_provenance_hash: str | None = None
     created_at: str
 
-
 class DiarizationCacheFile(BaseModel):
     provenance: DiarizationCacheProvenance
     turns: list[SpeakerTurn]
-
 
 class ClusterSplit(BaseModel):
     cluster_id: str
     at: float
     new_cluster_id: str
-
 
 class SpeakersMapping(BaseModel):
     cluster_defaults: dict[str, str] = Field(default_factory=dict)
@@ -257,7 +261,6 @@ class SpeakersMapping(BaseModel):
     turn_overrides: dict[int, str] = Field(default_factory=dict)
     splits: list[ClusterSplit] = Field(default_factory=list)
     label_sources: dict[str, str] = Field(default_factory=dict)
-
 
 class SessionMetadata(BaseModel):
     media_path: str
@@ -270,7 +273,6 @@ class SessionMetadata(BaseModel):
     created_at: str
     output_path: str = ""
 
-
 class SpeakerInfo(BaseModel):
     discord_username: str
     character_name: str
@@ -278,7 +280,6 @@ class SpeakerInfo(BaseModel):
     nicknames: list[str] = Field(default_factory=list)
     is_dm: bool = False
     raw_description: str | None = None
-
 
 class TrackCacheProvenance(BaseModel):
     schema_version: int = 1
@@ -291,11 +292,9 @@ class TrackCacheProvenance(BaseModel):
     source_file_size: int
     source_file_mtime: float
 
-
 class TrackCacheFile(BaseModel):
     provenance: TrackCacheProvenance
     segments: list[RawSegment]
-
 
 class EmbeddingCacheProvenance(BaseModel):
     version: int = 1

@@ -974,6 +974,34 @@ def compute_voice_profiles(
             },
         )
 
+    source_runs: dict[int, list[AlignedTurn]] = {}
+    for turn in turns:
+        if isinstance(turn, AlignedTurn) and turn.source_turn_id is not None:
+            source_runs.setdefault(turn.source_turn_id, []).append(turn)
+    unsafe_sources: set[int] = set()
+    for source_id, runs in source_runs.items():
+        names = {
+            resolve_speaker_for_turn(
+                turn_id=run.turn_id
+                if run.turn_id in mapping.turn_overrides
+                else source_id,
+                cluster_id=run.cluster_id,
+                time_slice_id=run.time_slice_id,
+                mapping=mapping,
+                fallback_speaker=run.speaker,
+            )
+            for run in runs
+        }
+        if (
+            any(run.speaker_uncertain for run in runs)
+            or len(names) > 1
+            or len({run.cluster_id for run in runs}) > 1
+        ):
+            unsafe_sources.add(source_id)
+        turn_by_id[source_id] = min(
+            runs, key=lambda run: (run.turn_id != source_id, run.start, run.turn_id)
+        )
+
     speaker_samples: dict[str, list[tuple[np.ndarray, str]]] = {}
 
     for i, valid_idx in enumerate(valid_indices):
@@ -989,6 +1017,17 @@ def compute_voice_profiles(
             if isinstance(matched_turn, AlignedTurn)
             else matched_turn.id
         )
+        if isinstance(matched_turn, AlignedTurn) and (
+            matched_turn.speaker_uncertain
+            or matched_turn.source_turn_id in unsafe_sources
+        ):
+            continue
+        if (
+            isinstance(matched_turn, AlignedTurn)
+            and matched_turn.source_turn_id is not None
+            and turn_id not in mapping.turn_overrides
+        ):
+            turn_id = matched_turn.source_turn_id
         cluster_id = matched_turn.cluster_id
 
         if mapping.label_sources and mapping.label_sources.get(cluster_id) != "manual":

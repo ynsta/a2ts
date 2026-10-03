@@ -43,6 +43,8 @@ class AlignedTurn(BaseModel):
     """A consolidated speech turn with text and assigned speaker."""
 
     turn_id: int
+    source_turn_id: int | None = None
+    speaker_uncertain: bool = False
     start: float
     end: float
     speaker: str
@@ -209,3 +211,26 @@ class EmbeddingCacheProvenance(BaseModel):
     transcript_provenance_hash: str | None = None
     diarization_provenance_hash: str | None = None
     entity_fingerprint: str | None = None
+
+
+class GlossaryEntry(BaseModel):
+    """Trusted spelling with deduplicated narrative frequency and provenance."""
+
+    model_config = {"strict": True, "extra": "forbid"}
+
+    term: str = Field(min_length=1, max_length=120)
+    frequency: int = Field(gt=0)
+    aliases: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+
+
+class ContextGlossary(BaseModel):
+    """Versioned offline spelling reference derived from reviewed notes."""
+
+    model_config = {"strict": True, "extra": "forbid"}
+
+    language: str
+    entries: list[GlossaryEntry]
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dictionary_version: str
+    schema_version: int = Field(default=1, ge=1)

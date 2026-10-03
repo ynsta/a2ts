@@ -4,6 +4,15 @@ import re
 
 from a2ts.models import AlignedTurn
 
+SPEAKER_UNCERTAINTY_CALLOUT = (
+    "> [!WARNING] Speaker attribution uncertain: multiple candidate speakers."
+)
+
+SPEAKER_UNCERTAINTY_NOTICE = (
+    "> [!WARNING] Some speaker attributions are uncertain. "
+    "Review speaker assignments against the audio."
+)
+
 DICE_SIDES_MAP = {
     "4": "4",
     "quatre": "4",
@@ -150,6 +159,8 @@ def debounce_consecutive_turns(
                     "end": max(prev.end, current.end),
                     "text": merged_text,
                     "words": merged_words,
+                    "speaker_uncertain": prev.speaker_uncertain
+                    or current.speaker_uncertain,
                 }
             )
         else:
@@ -167,6 +178,8 @@ def render_markdown_transcript(
         return ""
 
     lines: list[str] = []
+    if any(turn.speaker_uncertain for turn in turns):
+        lines.extend([SPEAKER_UNCERTAINTY_NOTICE, ""])
     for turn in turns:
         start_str = format_timestamp(turn.start)
         end_str = format_timestamp(turn.end)

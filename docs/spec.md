@@ -43,8 +43,8 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 
 ### 3.2 Lore & Vocabulary Mining (Context Biasing)
 - Scans user Obsidian vaults or Markdown context directories (default: `contexte/`).
-- Extracts named entities, `[[wikilinks]]`, YAML frontmatter `aliases:`, and document headings (`#`, `##`, etc.).
-- Deduplicates and tokenizes discovered terms using `cl100k_base` BPE tokenizer.
+- Extracts named entities, `[[wikilinks]]`, YAML frontmatter `aliases:`, and level-two headings (`##`).
+- Deduplicates terms by entity-kind priority; uses a cached Whisper tokenizer when available, falling back to `cl100k_base`.
 - Packs extracted terms into a token-budgeted prompt (default: 180 tokens, Whisper max 224 tokens) passed to the speech recognition engine to guide decoding toward domain terminology.
 
 ### 3.3 Triple-Engine Speech Recognition (ASR)
@@ -81,7 +81,11 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - `ecapa`: Forces SpeechBrain ECAPA-TDNN and agglomerative clustering.
 
 ### 3.5 Timeline Slicing & Word Alignment
-- Projects word-level timestamps onto speaker turns based on midpoint timestamp matching.
+- Assigns timestamped words to the speaker turn with the greatest temporal intersection. Equal intersections use proximity to the turn center as a deterministic heuristic, not proof of speaker identity.
+- Keeps apostrophe and hyphen continuation tokens together during attribution and renders them without artificial spaces.
+- Preserves chronological word order across speaker changes, including returns to a previous acoustic turn.
+- Gives repeated acoustic-turn fragments unique run IDs while retaining `source_turn_id` for embedding and speaker-override provenance. Legacy cached turns remain readable with defaulted metadata.
+- Marks lexical groups intersecting multiple speaker clusters with `AlignedTurn.speaker_uncertain`, including overlaps and groups crossing a speaker boundary. Naming a cluster does not resolve attribution ambiguity.
 - Segments long recordings into manageable time windows (default: 15-minute slices).
 - Flags potential acoustic outlier turns or low-confidence segments.
 
@@ -100,6 +104,9 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
 
 ### 3.7 Transcript Consolidation & LLM Refinement
 - Debounces contiguous speaker turns (merges turns from the same speaker separated by <= 2.0s silence).
+- Retains per-turn speaker uncertainty in session metadata and emits one transcript-level notice before the first turn if any attribution is uncertain. Rendering does not repeat warnings under individual turns.
+- Refinement preserves the application-generated transcript notice outside model editing. Legacy per-turn uncertainty callouts remain protected on their original turns; invalid edits fall back to the raw chunk.
+- Refinement rejection logs identify the chunk and exact failure category: turn headers, text length, protected uncertainty markers, or empty output. Safety checks remain enabled.
 - Formats structured Markdown output with timestamp headers:
   ```markdown
   ### [00:01:15 - 00:01:28] Alice
@@ -112,12 +119,20 @@ The core design principle is **complete local sovereignty**: zero telemetry, zer
   - Corrects phonetic ASR errors (`jets-dés`, `jet de délai` -> `jets de dés` / `jet de dés`).
 - Optional local LLM refinement pass via `agy` CLI (`--refine`):
   - Normalizes vocabulary deterministically.
-  - **Data Boundary**: Core inference (ASR and diarization) runs 100% locally. The `--refine` pass delegates chunked markdown transcripts to the external `agy` CLI binary (`agy --model <model> --effort <effort>`), which defaults to Google Gemini (`gemini-3.8-flash-low`) or another configured model, introducing network egress when cloud providers are configured.
+  - **Data Boundary**: Core inference (ASR and diarization) runs 100% locally. The `--refine` pass delegates transcript chunks and compact reviewed spelling references to the external `agy` CLI binary (`agy --model <model> --effort <effort>`), which defaults to Google Gemini (`gemini-3.8-flash-low`) or another configured model, introducing network egress when cloud providers are configured.
   - Raw unrefined markdown is always written to `<output>.raw.md` before refinement begins.
   - Separates in-character roleplay from out-of-character remarks (`> [!NOTE] Hors-jeu`).
-  - Enforces safety checks: verifies all turn headers (`### [HH:MM:SS - HH:MM:SS]`) are preserved and word count remains within a 15% delta, falling back to raw chunk on mismatch to prevent hallucination.
+  - Polish mode enforces safety checks: verifies all turn headers (`### [HH:MM:SS - HH:MM:SS]`) are preserved and word count remains within a 15% delta, falling back to raw chunk on mismatch to prevent hallucination.
 
-### 3.8 Multi-Track Ingestion & Discord Craig Pipeline
+### 3.8 Reviewed Dictionary and Speaker Reconstruction
+
+`--refine` defaults to `--refine-mode reconstruct`. It may merge, split and reassign speaker turns to repair fragmented sentences. Structured results must cover indexed source words completely and in order, use existing speakers, and pass bounded text-change guards that permit small missing-word and name corrections. Invalid chunks retain raw content. Text-based speaker assignments remain hypotheses. `--refine-mode polish` retains original headers and legacy validation.
+
+Both `run` and `craig` accept `--refine-chunk-words` (positive integer, default 1500) and `--refine-timestamps / --no-refine-timestamps` (default True). Reconstruction uses conservative source timestamp envelopes; speaker-only headings are optional.
+
+Refinement builds an offline dictionary from reviewed context: unknown language-dictionary words plus explicit names, aliases, speaker labels and custom vocabulary. Spellings are preserved. Duplicate exported lines count once, genuine repetitions count normally. Entries sort by descending frequency then normalized spelling. Full context prose is excluded from requests; complete reference entries occupy at most 4000 characters, ranked by relevance then frequency. Validated snapshots record source SHA-256 and dictionary version. ASR prompt budgeting remains unchanged.
+
+### 3.9 Multi-Track Ingestion & Discord Craig Pipeline
 - Accepts directories containing isolated per-speaker `.flac` tracks produced by the Craig Discord recording bot (`^(\d+)-(.*)\.flac`).
 - Automatically extracts Discord usernames from track filenames.
 - Parses optional `speakers.md` roster files to map usernames to character names, classes/roles, nicknames, and Game Master (`is_dm`) statuses.
@@ -166,6 +181,9 @@ a2ts run <media_file> [OPTIONS]
 | `--force / --no-force` | `bool` | `False` | Force re-running transcription/diarization, ignoring cache |
 | `--rpg-normalize / --no-rpg-normalize` | `bool` | `True` | Normalize French tabletop RPG dice expressions and terms |
 | `--refine / --no-refine` | `bool` | `False` | Run LLM post-processing via `agy` CLI (remote delegation) |
+| `--refine-mode` | `str` | `reconstruct` | Structured turn reconstruction or header-preserving `polish` |
+| `--refine-chunk-words` | `int` | `1500` | Positive maximum source words per reconstruction request |
+| `--refine-timestamps / --no-refine-timestamps` | `bool` | `True` | Include conservative source timestamp envelopes in reconstruction |
 | `--refine-model` | `str` | `gemini-3.8-flash-low` | Model name for LLM refiner via `agy` CLI |
 | `--output` | `Path` | `transcript.md` | Final Markdown transcript destination |
 | `--cache-dir` | `Path` | `.a2ts` | Local artifact cache directory |
@@ -188,7 +206,12 @@ a2ts craig <recording_dir> [OPTIONS]
 | `--output` | `Path` | `None` | Output markdown transcript path (defaults to `<recording_dir>/transcript.md`) |
 | `--debounce` | `float` | `2.0` | Debounce window in seconds for consecutive turns |
 | `--force` | `bool` | `False` | Force re-transcription ignoring existing `.transcripts/` cache |
+| `--language / -l` | `str` | `fr` | Spoken language and reviewed dictionary language |
+| `--rpg-normalize / --no-rpg-normalize` | `bool` | `True` | Enable French tabletop RPG normalization and annotation instructions |
 | `--refine / --no-refine` | `bool` | `False` | Run LLM refiner pass on transcript via `agy` CLI |
+| `--refine-mode` | `str` | `reconstruct` | Structured turn reconstruction or header-preserving `polish` |
+| `--refine-chunk-words` | `int` | `1500` | Positive maximum source words per reconstruction request |
+| `--refine-timestamps / --no-refine-timestamps` | `bool` | `True` | Include conservative source timestamp envelopes in reconstruction |
 | `--refine-model` | `str` | `gemini-3.8-flash-low` | Model name for LLM refiner |
 | `--refine-effort` | `str` | `low` | Reasoning effort for LLM refiner (`low`, `medium`, `high`) |
 
@@ -237,6 +260,10 @@ Displays current environment, hardware accelerators, CUDA availability, and inst
 a2ts info
 ```
 
+### 4.8 `a2ts extract-glossary`
+
+`a2ts extract-glossary --context-dir contexte --language fr --output glossary.json` inspects the dictionary without an LLM. Context/language default to `contexte`/`fr`; optional `--vocab-file` supplies explicit terms. Without output, validated JSON goes to stdout. File output is atomic. Unsupported dictionary languages report a clear error.
+
 ---
 
 ## 5. Non-Functional Requirements & Constraints
@@ -259,5 +286,3 @@ a2ts info
    - Macro benchmarks & performance checks: benchmark tests monitor macro algorithmic scaling and resource ceilings without locking down internal call structures.
    - Zero untyped definitions across production code and test suites (`uv run mypy` with 0 errors under PEP 561).
    - Hermetic test isolation: tests operate in ephemeral temporary directories (`tmp_path`) with no dependencies on network access or GPU hardware.
-
-

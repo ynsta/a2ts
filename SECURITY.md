@@ -4,7 +4,7 @@
 
 We take security vulnerabilities seriously. If you discover a security vulnerability in `a2ts`, please report it responsibly rather than opening a public issue.
 
-- **Private Security Contact**: Please contact the maintainer directly via GitHub Security Advisories or email [stany.marcel@gmail.com](mailto:stany.marcel@gmail.com) with the subject `[SECURITY] a2ts vulnerability report`.
+- **Private Security Contact**: Please report privately through [GitHub Security Advisories](https://github.com/ynsta/a2ts/security/advisories/new).
 - **Response Time**: We endeavor to acknowledge reports within 48 hours and provide a remediation timeline.
 - **Scope**: Vulnerabilities related to command injection, path traversal, malicious input parsing, or unintended data exfiltration.
 

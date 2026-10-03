@@ -17,11 +17,13 @@ src/a2ts/
 ├── consolidator.py       # Turn debouncing, RPG normalization & Markdown assembly
 ├── craig.py              # Craig multi-track audio discovery, roster parsing & interleaving
 ├── diarizer.py           # Nemotron-3 & SpeechBrain ECAPA diarization & voice profiles
+├── glossary.py           # Reviewed-term extraction, ranking & dictionary provenance
+├── reconstruction.py     # Word-bounded structured turn reconstruction & validation
 ├── media.py              # ffprobe metadata probing, SHA-256 hashing & ffmpeg extraction
 ├── models.py             # Pydantic data models for all domain entities & cache envelopes
 ├── refiner.py            # Local LLM transcript cleanup via external agy CLI
 ├── speaker_review.py     # Terminal QCM interactive review & label propagation
-├── timeline.py           # Word-to-turn midpoint alignment & time-slice partitioning
+├── timeline.py           # Overlap-aware lexical alignment & time-slice partitioning
 ├── transcriber.py        # Abstract ASR base class, Faster-Whisper & Voxtral engines
 └── vocab.py              # Obsidian wikilink/alias lore mining & token budgeting
 ```
@@ -32,18 +34,20 @@ src/a2ts/
 
 | File | Primary Responsibility | Key Functions / Classes | Downstream Dependents |
 | :--- | :--- | :--- | :--- |
-| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment` (`is_truncated`), `WordTimestamp`, `SpeakerTurn`, `AlignedTurn`, `EntityRecord`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `ClusterSplit`, `SessionMetadata`, `TranscriptCacheProvenance`, `TranscriptCacheFile`, `DiarizationCacheProvenance`, `DiarizationCacheFile`, `EmbeddingCacheProvenance`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile` | All modules |
+| [`models.py`](../src/a2ts/models.py) | Pydantic data schemas & validation | `RawSegment` (`is_truncated`), `WordTimestamp`, `SpeakerTurn`, `AlignedTurn` (`source_turn_id`, `speaker_uncertain`), `EntityRecord`, `VoiceProfile`, `VoiceProfilesDatabase`, `SpeakersMapping`, `ClusterSplit`, `SessionMetadata`, `TranscriptCacheProvenance`, `TranscriptCacheFile`, `DiarizationCacheProvenance`, `DiarizationCacheFile`, `EmbeddingCacheProvenance`, `SpeakerInfo`, `TrackCacheProvenance`, `TrackCacheFile`, `GlossaryEntry`, `ContextGlossary` | All modules |
 | [`cache.py`](../src/a2ts/cache.py) | Atomic cache storage & provenance validation | `atomic_write_text()`, `atomic_save_numpy()`, `compute_prompt_hash()`, `compute_transcript_provenance_hash()`, `save_transcript_cache()`, `load_transcript_cache()`, `save_diarization_cache()`, `load_diarization_cache()` | `cli.py`, `craig.py` |
-| [`cli.py`](../src/a2ts/cli.py) | Top-level CLI orchestration & UX | `app`, `run()`, `craig()`, `review()`, `recluster()`, `split()`, `extract_vocab()`, `info()`, `resolve_device_and_compute_type()`, `create_transcriber()` | End user CLI (`a2ts`) |
+| [`cli.py`](../src/a2ts/cli.py) | Top-level CLI orchestration & UX | `app`, `run()`, `craig()`, `review()`, `recluster()`, `split()`, `extract_vocab()`, `extract_glossary()`, `RefinementMode`, `info()`, `resolve_device_and_compute_type()`, `create_transcriber()` | End user CLI (`a2ts`) |
 | [`craig.py`](../src/a2ts/craig.py) | Craig multi-track discovery, parsing & interleaving | `discover_tracks()`, `parse_track_username()`, `parse_speakers_file()`, `parse_info_file()`, `find_speakers_file()`, `compute_track_provenance()`, `build_craig_prompt()`, `load_track_cache()`, `save_track_cache()`, `transcribe_craig_track()`, `merge_craig_tracks_to_turns()` | `cli.py`, `tests/` |
 | [`media.py`](../src/a2ts/media.py) | Audio stream extraction & probing | `probe_media()`, `compute_file_hash()`, `extract_audio_to_wav()` | `cli.py` |
 | [`vocab.py`](../src/a2ts/vocab.py) | Obsidian lore parsing & prompt budgeting | `CONTROL_TOKEN_PATTERN`, `strip_control_tokens()`, `clean_entity_name()`, `scan_context_directory()`, `extract_candidates_from_markdown()`, `parse_obsidian_note()`, `build_biasing_prompt()`, `count_tokens()`, `load_speaker_names()` | `cli.py`, `craig.py` |
 | [`transcriber.py`](../src/a2ts/transcriber.py) | Speech-to-text inference engines | `TranscriberEngine`, `WhisperEngine`, `VoxtralEngine`, `get_engine()`, `create_transcriber()`, `ensure_cuda_libs()` | `cli.py` |
 | [`diarizer.py`](../src/a2ts/diarizer.py) | Acoustic diarization & voice profiles | `get_nemotron_model()`, `diarize_nemotron()`, `get_embedding_model()`, `compute_entity_fingerprint()`, `save_segment_embeddings()`, `load_segment_embeddings()`, `save_turn_embeddings()`, `load_turn_embeddings()`, `extract_embeddings()`, `extract_embeddings_for_segments()`, `extract_embeddings_for_turns()`, `diarize_segments()`, `classify_clusters_to_profiles()`, `compute_voice_profiles()`, `propagate_speaker_labels()`, `save_voice_profiles()`, `load_voice_profiles()` | `cli.py`, `tests/` |
-| [`timeline.py`](../src/a2ts/timeline.py) | Temporal slicing & word alignment | `align_words_to_speaker_turns()`, `assign_time_slices()`, `split_cluster_at_time()` | `cli.py`, `speaker_review.py` |
+| [`timeline.py`](../src/a2ts/timeline.py) | Overlap-aware lexical alignment, chronological runs, acoustic provenance & time slicing | `align_words_to_speaker_turns()`, `assign_time_slices()`, `split_cluster_at_time()` | `cli.py`, `speaker_review.py` |
 | [`speaker_review.py`](../src/a2ts/speaker_review.py) | Interactive QCM & speaker attribution review | `collect_speaker_stats()`, `run_interactive_review()`, `apply_speakers_mapping()`, `apply_splits_to_turns()`, `save_speakers_mapping()`, `load_speakers_mapping()` | `cli.py` |
 | [`consolidator.py`](../src/a2ts/consolidator.py) | Turn debouncing & Markdown formatting | `debounce_consecutive_turns()`, `normalize_rpg_terms()`, `render_markdown_transcript()` | `cli.py` |
-| [`refiner.py`](../src/a2ts/refiner.py) | External LLM transcript refinement & phonetic normalization | `extract_turn_headers()`, `chunk_transcript_markdown()`, `validate_refiner_chunk()`, `refine_transcript_markdown()`, `normalize_rpg_phonetics()` | `cli.py` |
+| [`glossary.py`](../src/a2ts/glossary.py) | Offline reviewed-term extraction, export deduplication, ranking and provenance | `build_context_glossary()` | `cli.py` |
+| [`reconstruction.py`](../src/a2ts/reconstruction.py) | Word-bounded structured speaker repair and validation | `ReconstructionTurn`, `ReconstructionResult`, `reconstruct_transcript_markdown()` | `refiner.py` |
+| [`refiner.py`](../src/a2ts/refiner.py) | External LLM refinement, protected transcript notices, precise rejection diagnostics & phonetic normalization | `build_glossary_reference()`, `extract_turn_headers()`, `chunk_transcript_markdown()`, `validate_refiner_chunk()`, `refine_transcript_markdown()`, `normalize_rpg_phonetics()` | `cli.py` |
 
 ---
 
@@ -66,6 +70,8 @@ graph TD
     CLI --> PROFILES["diarizer.py\nextract_embeddings_for_turns()\nclassify_clusters_to_profiles()\ncompute_voice_profiles()"]
     
     CLI --> CONSOL["consolidator.py\ndebounce_consecutive_turns()\nrender_markdown_transcript()"]
+    CLI --> GLOSSARY["glossary.py\nbuild_context_glossary()"]
+    REFINE --> RECON["reconstruction.py\nreconstruct_transcript_markdown()"]
     CLI --> REFINE["refiner.py\nrefine_transcript_markdown() (agy CLI)"]
 ```
 
@@ -86,9 +92,15 @@ tests/
 │   ├── test_transcriber.py         # Whisper and Voxtral engine wrappers
 │   ├── test_diarizer.py            # Nemotron-3, ECAPA clustering, & turn embeddings
 │   ├── test_timeline.py            # Word alignment & time-slice cluster splitting
+│   ├── test_overlap_alignment.py   # Overlap ranking, lexical continuity, source IDs & uncertainty
 │   ├── test_speaker_review.py      # Interactive QCM, label propagation & mappings
 │   ├── test_consolidator.py        # Contiguous turn debouncing, RPG normalization & Markdown
-│   └── test_refiner.py             # Prompt generation & agy subprocess safety guards
+│   ├── test_refiner.py             # Prompt generation & agy subprocess safety guards
+│   ├── test_refiner_glossary.py     # Bounded spelling references and refinement modes
+│   ├── test_reconstruction.py      # Structured coverage, repairs and fallback behavior
+│   └── test_refiner_notice.py      # One global notice, metadata preservation & exact rejection logs
+├── test_glossary.py                # Reviewed spelling, deduplication and provenance
+├── test_glossary_integration.py    # CLI extraction and dictionary snapshots
 ├── test_cli.py                     # Comprehensive Typer runner CLI argument tests
 ├── test_consolidator_dice.py       # French tabletop RPG dice normalization hardening
 ├── test_diarization_provenance.py  # Diarization cache binding to transcript provenance
@@ -98,3 +110,9 @@ tests/
 ├── test_session_scoping.py         # Session scoping under .a2ts/sessions/<media_hash>/
 └── test_splits_persistence.py      # Split persistence, positional fallback & voice profile enrollment tests
 ```
+
+## 5. Documentation Navigation
+
+- [`README.md`](README.md) is the canonical documentation entry point.
+- [`adr/index.md`](adr/index.md) lists architectural decisions, including [overlap-aware alignment](adr/0007-overlap-aware-word-alignment.md).
+- [`plans/index.md`](plans/index.md) indexes historical plan pointers; completed plans live under `archive/`.

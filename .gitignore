@@ -59,3 +59,11 @@ transcript.md
 # Local context notes, voice profiles, and transcripts
 contexte/
 
+
+# Local secrets and session artifacts
+.env
+.env.*
+!.env.example
+*.ses
+*voice-profiles*.json
+*voice_profiles*.json

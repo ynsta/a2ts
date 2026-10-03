@@ -1,6 +1,6 @@
 # a2ts (Audio to Text / Transcript)
 
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/stany/a2ts)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/ynsta/a2ts)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: >=3.13](https://img.shields.io/badge/python-3.13%2B-blue)](pyproject.toml)
 
@@ -79,7 +79,7 @@ We recommend using [uv](https://docs.astral.sh/uv/) for fast, deterministic envi
 ### Option A: Standard Profile (Faster-Whisper + Diarization)
 
 ```bash
-git clone https://github.com/stany/a2ts.git
+git clone https://github.com/ynsta/a2ts.git
 cd a2ts
 uv sync
 ```
