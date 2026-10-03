@@ -573,6 +573,7 @@ def test_diarize_segments_engine_auto_cuda(
 @patch("a2ts.diarizer.sf.read")
 @patch("a2ts.diarizer.get_embedding_model")
 @patch("torch.cuda.is_available", return_value=True)
+@patch.object(torch.Tensor, "cuda", lambda self: self)
 def test_diarize_segments_engine_auto_fallback(
     mock_cuda: MagicMock,
     mock_get_model: MagicMock,

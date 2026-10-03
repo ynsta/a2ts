@@ -295,6 +295,8 @@ def test_craig_cli_lazy_whisper_model_loading(tmp_path: Path) -> None:
                 str(rec_dir),
                 "--context-dir",
                 str(empty_ctx),
+                "--compute-type",
+                "float16",
                 "--no-rpg-normalize",
             ],
         )

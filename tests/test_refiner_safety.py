@@ -196,9 +196,9 @@ def test_refine_transcript_markdown_chunking_and_timeout() -> None:
         result = refine_transcript_markdown(raw, chunk_turns=1)
         # Should have called agy once per chunk (2 chunks)
         assert mock_run.call_count == 2
-        # Dynamic timeout check: for small chunk (< 600 words), timeout is 30
+        # Dynamic timeout check: for small chunk (< 600 words), timeout is 60
         for call in mock_run.call_args_list:
-            assert call.kwargs["timeout"] == 30
+            assert call.kwargs["timeout"] == 60
         assert "### [00:00:00 - 00:00:05] Alice" in result
         assert "### [00:00:05 - 00:00:10] Bob" in result
         assert "1d20" in result

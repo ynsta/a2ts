@@ -1,5 +1,7 @@
 """Tests for French RPG dice normalization hardening."""
 
+import re
+
 from typer.testing import CliRunner
 
 from a2ts.cli import app
@@ -68,10 +70,12 @@ def test_cli_rpg_normalize_flag_present() -> None:
     """Verify CLI run and craig commands expose --rpg-normalize/--no-rpg-normalize options."""
     result_run = runner.invoke(app, ["run", "--help"])
     assert result_run.exit_code == 0
-    assert "--rpg-normalize" in result_run.output
-    assert "--no-rpg-normalize" in result_run.output
+    clean_run = re.sub(r"\x1b\[[0-9;]*m", "", result_run.output)
+    assert "--rpg-normalize" in clean_run
+    assert "--no-rpg-normalize" in clean_run
 
     result_craig = runner.invoke(app, ["craig", "--help"])
     assert result_craig.exit_code == 0
-    assert "--rpg-normalize" in result_craig.output
-    assert "--no-rpg-normalize" in result_craig.output
+    clean_craig = re.sub(r"\x1b\[[0-9;]*m", "", result_craig.output)
+    assert "--rpg-normalize" in clean_craig
+    assert "--no-rpg-normalize" in clean_craig

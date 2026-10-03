@@ -5,6 +5,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 
 from a2ts.consolidator import normalize_rpg_terms
 
@@ -29,6 +30,32 @@ def extract_turn_headers(markdown: str) -> list[str]:
     return [m.strip() for m in TURN_HEADER_PATTERN.findall(markdown)]
 
 
+def strip_markdown_code_fences(text: str) -> str:
+    """Strip enclosing markdown code fences (e.g. ```markdown ... ```) if present."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    return cleaned
+
+
+def strip_callout_syntax(text: str) -> str:
+    """Strip markdown callout header lines and quote prefixes for dialogue comparison."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("> [!NOTE]", ">[!NOTE]")):
+            continue
+        if stripped.startswith(">"):
+            stripped = stripped.lstrip("> ").strip()
+        lines.append(stripped)
+    return "\n".join(lines)
+
+
 def chunk_transcript_markdown(markdown: str, max_turns: int = 25) -> list[str]:
     """Split markdown into chunks containing at most max_turns turns each, keeping frontmatter intact."""
     if not markdown:
@@ -51,10 +78,13 @@ def chunk_transcript_markdown(markdown: str, max_turns: int = 25) -> list[str]:
 
 def validate_refiner_chunk(original: str, refined: str) -> bool:
     """Validate refined chunk retains all turn headers and stays within 15% word count delta."""
-    if extract_turn_headers(original) != extract_turn_headers(refined):
+    clean_refined = strip_markdown_code_fences(refined)
+    if extract_turn_headers(original) != extract_turn_headers(clean_refined):
         return False
     orig_words = len(original.split())
-    ref_words = len(refined.split())
+    # Strip callout syntax so added callout headers don't falsely exceed the 15% tolerance
+    content_refined = strip_callout_syntax(clean_refined)
+    ref_words = len(content_refined.split())
     if orig_words == 0:
         return ref_words == 0
     allowed_delta = max(5, int(orig_words * 0.15))
@@ -89,12 +119,20 @@ def refine_transcript_markdown(
             "1. Ne modifie pas les timestamps ### [HH:MM:SS - HH:MM:SS] Nom.\n"
             "2. Encadre les discussions hors-jeu / techniques (jets de dés, règles, apartés) dans des blocs callout:\n"
             "> [!NOTE] Hors-jeu / Discussion\n"
-            "3. Ne retire aucune information ni dialogue.\n\n"
+            "3. Ne retire aucune information ni dialogue.\n"
+            "4. Réponds UNIQUEMENT avec la transcription formatée, sans bloc de code markdown englobant (pas de ```markdown), sans salutation ni texte d'introduction ou de conclusion.\n\n"
             f"Voici la transcription brute:\n\n{clean_chunk}"
         )
 
-        timeout = max(30, min(120, len(clean_chunk.split()) // 20))
-        cmd = ["agy", "--model", agy_model, "--effort", effort]
+        timeout = max(60, min(180, 45 + len(clean_chunk.split()) // 10))
+        cmd = [
+            "agy",
+            "--model",
+            agy_model,
+            "--effort",
+            effort,
+            "--disable-slash-commands",
+        ]
         try:
             proc = subprocess.run(
                 cmd,
@@ -102,9 +140,10 @@ def refine_transcript_markdown(
                 capture_output=True,
                 text=True,
                 check=True,
+                cwd=tempfile.gettempdir(),
                 timeout=timeout,
             )
-            refined_chunk = proc.stdout.strip()
+            refined_chunk = strip_markdown_code_fences(proc.stdout.strip())
             if validate_refiner_chunk(clean_chunk, refined_chunk):
                 processed_chunks.append(refined_chunk)
             else:

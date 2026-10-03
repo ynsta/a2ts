@@ -54,10 +54,39 @@ def test_refine_transcript_markdown_success() -> None:
         assert result == refined_output
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
-        assert cmd == ["agy", "--model", "custom-model", "--effort", "low"]
+        assert cmd == [
+            "agy",
+            "--model",
+            "custom-model",
+            "--effort",
+            "low",
+            "--disable-slash-commands",
+        ]
         assert "Lance 1d20 pour voir." in mock_run.call_args.kwargs["input"]
         assert mock_run.call_args.kwargs["text"] is True
         assert mock_run.call_args.kwargs["capture_output"] is True
+
+
+def test_strip_markdown_code_fences() -> None:
+    from a2ts.refiner import strip_markdown_code_fences
+
+    fenced = "```markdown\n### [00:00:00 - 00:00:05] MJ\nBonjour\n```"
+    assert strip_markdown_code_fences(fenced) == "### [00:00:00 - 00:00:05] MJ\nBonjour"
+
+    unfenced = "### [00:00:00 - 00:00:05] MJ\nBonjour"
+    assert strip_markdown_code_fences(unfenced) == unfenced
+
+
+def test_validate_refiner_chunk_with_callouts() -> None:
+    from a2ts.refiner import validate_refiner_chunk
+
+    orig = "### [00:00:00 - 00:00:05] MJ\nJet de dé vingt pour voir si ça touche."
+    refined = (
+        "### [00:00:00 - 00:00:05] MJ\n"
+        "> [!NOTE] Hors-jeu / Discussion\n"
+        "> Jet de 1d20 pour voir si ça touche."
+    )
+    assert validate_refiner_chunk(orig, refined) is True
 
 
 def test_refine_transcript_markdown_hallucination_guard() -> None:

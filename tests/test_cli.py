@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -563,16 +564,15 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
     emb[0, 0] = 1.0
     np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
     (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
+    device, compute_type = resolve_device_and_compute_type("auto", None)
+    is_cuda = device == "cuda"
     trans_prov = TranscriptCacheProvenance(
         media_hash="abc1234",
         engine="whisper",
         model_name="large-v3",
         prompt_hash="no_prompt",
-        compute_type="float16",
+        compute_type=compute_type,
     )
-    import torch
-
-    is_cuda = torch.cuda.is_available()
     resolved_engine = "nemotron" if is_cuda else "ecapa"
     thash = compute_transcript_provenance_hash(trans_prov)
     diar_prov = DiarizationCacheProvenance(
@@ -581,7 +581,7 @@ def test_run_voice_profile_pre_matching(tmp_path: Path) -> None:
         resolved_engine=resolved_engine,
         cluster_threshold=0.60,
         num_speakers=None,
-        device="cuda",
+        device=device,
         transcript_provenance_hash=thash,
     )
     from a2ts.diarizer import compute_entity_fingerprint
@@ -2428,7 +2428,6 @@ def test_run_skips_transcript_cache_when_truncated(tmp_path: Path) -> None:
 def test_run_profile_match_escapes_bracketed_names(tmp_path: Path) -> None:
     """Profile match prints with bracketed speaker names do not raise MarkupError."""
     import numpy as np
-    import torch
 
     from a2ts.cache import compute_transcript_provenance_hash
     from a2ts.diarizer import compute_entity_fingerprint
@@ -2462,14 +2461,15 @@ def test_run_profile_match_escapes_bracketed_names(tmp_path: Path) -> None:
     np.save(diar_dir / "abc1234_turn_embeddings.npy", emb)
     (diar_dir / "abc1234_turn_indices.json").write_text("[0]", encoding="utf-8")
 
+    device, compute_type = resolve_device_and_compute_type("auto", None)
+    is_cuda = device == "cuda"
     trans_prov = TranscriptCacheProvenance(
         media_hash="abc1234",
         engine="whisper",
         model_name="large-v3",
         prompt_hash="no_prompt",
-        compute_type="float16",
+        compute_type=compute_type,
     )
-    is_cuda = torch.cuda.is_available()
     resolved_engine = "nemotron" if is_cuda else "ecapa"
     thash = compute_transcript_provenance_hash(trans_prov)
     diar_prov = DiarizationCacheProvenance(
@@ -2478,7 +2478,7 @@ def test_run_profile_match_escapes_bracketed_names(tmp_path: Path) -> None:
         resolved_engine=resolved_engine,
         cluster_threshold=0.60,
         num_speakers=None,
-        device="cuda",
+        device=device,
         transcript_provenance_hash=thash,
     )
     spk_turns = [SpeakerTurn(id=0, start=0.0, end=2.0, cluster_id="SPEAKER_00")]
@@ -2699,17 +2699,19 @@ def test_run_help_shows_language_option_and_parakeet_note() -> None:
     """Test that a2ts run --help documents --language / -l and mentions Parakeet limitation."""
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--language" in result.output
-    assert "-l" in result.output
-    assert "parakeet" in result.output.lower()
+    clean_output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--language" in clean_output
+    assert "-l" in clean_output
+    assert "parakeet" in clean_output.lower()
 
 
 def test_craig_help_shows_language_option() -> None:
     """Test that a2ts craig --help documents --language / -l."""
     result = runner.invoke(app, ["craig", "--help"])
     assert result.exit_code == 0
-    assert "--language" in result.output
-    assert "-l" in result.output
+    clean_output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--language" in clean_output
+    assert "-l" in clean_output
 
 
 def test_run_passes_language_to_transcriber(tmp_path: Path) -> None:
